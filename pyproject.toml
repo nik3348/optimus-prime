@@ -1,5 +1,5 @@
 [tool.poetry]
-name = "qmnb"
+name = "optimus_prime"
 version = "0.1.0"
 description = ""
 authors = ["Nicholas Lai Jin Yung <nicklai88@live.com>"]
