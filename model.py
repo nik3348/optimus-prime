@@ -2,6 +2,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
 from torchtune.modules import MultiHeadAttention, RotaryPositionalEmbeddings
+from config import ModelConfig
 
 
 class SwiGLU(nn.Module):
@@ -16,25 +17,25 @@ class SwiGLU(nn.Module):
 
 
 class TransformerBlock(nn.Module):
-    def __init__(self, dim, num_heads, num_kv_heads, mlp_ratio=4, dropout=0.0, checkpointing=False):
+    def __init__(self, config: ModelConfig, mlp_ratio=4, dropout=0.0):
         super().__init__()
-        self.norm1 = nn.RMSNorm(dim)
+        self.norm1 = nn.RMSNorm(config.dim)
 
         # Create projection layers for attention
-        q_proj = nn.Linear(dim, dim, bias=False)
-        k_proj = nn.Linear(dim, (dim // num_heads) * num_kv_heads, bias=False)
-        v_proj = nn.Linear(dim, (dim // num_heads) * num_kv_heads, bias=False)
-        out_proj = nn.Linear(dim, dim, bias=False)
+        q_proj = nn.Linear(config.dim, config.dim, bias=False)
+        k_proj = nn.Linear(config.dim, (config.dim // config.num_heads) * config.num_kv_heads, bias=False)
+        v_proj = nn.Linear(config.dim, (config.dim // config.num_heads) * config.num_kv_heads, bias=False)
+        out_proj = nn.Linear(config.dim, config.dim, bias=False)
 
         # Create rotary embeddings
-        pos_embeddings = RotaryPositionalEmbeddings(dim // num_heads)
+        pos_embeddings = RotaryPositionalEmbeddings(config.dim // config.num_heads)
 
         # Initialize MultiHeadAttention with all required components
         self.attn = MultiHeadAttention(
-            embed_dim=dim,
-            num_heads=num_heads,
-            num_kv_heads=num_kv_heads,
-            head_dim=dim // num_heads,
+            embed_dim=config.dim,
+            num_heads=config.num_heads,
+            num_kv_heads=config.num_kv_heads,
+            head_dim=config.dim // config.num_heads,
             q_proj=q_proj,
             k_proj=k_proj,
             v_proj=v_proj,
@@ -44,10 +45,10 @@ class TransformerBlock(nn.Module):
             attn_dropout=dropout
         )
 
-        self.norm2 = nn.RMSNorm(dim)
-        self.mlp = SwiGLU(dim, int(dim * mlp_ratio))
+        self.norm2 = nn.RMSNorm(config.dim)
+        self.mlp = SwiGLU(config.dim, int(config.dim * mlp_ratio))
         self.dropout = nn.Dropout(dropout)
-        self.checkpointing = checkpointing
+        self.checkpointing = config.checkpointing
 
     def forward(self, x, attn_mask=None, kv_cache=None, training_mode=False):
         def fn(x, attn_mask, kv_cache):  # allows use with checkpoint
@@ -71,14 +72,14 @@ class TransformerBlock(nn.Module):
 
 
 class Transformer(nn.Module):
-    def __init__(self, vocab_size, dim, depth, num_heads, num_kv_heads, mlp_ratio=4, dropout=0.0, checkpointing=False):
+    def __init__(self, config: ModelConfig, mlp_ratio=4, dropout=0.0):
         super().__init__()
-        self.embed = nn.Embedding(vocab_size, dim)
+        self.embed = nn.Embedding(config.vocab_size, config.dim)
         self.layers = nn.ModuleList([
-            TransformerBlock(dim, num_heads, num_kv_heads, mlp_ratio, dropout, checkpointing) for _ in range(depth)
+            TransformerBlock(config, mlp_ratio, dropout) for _ in range(config.depth)
         ])
-        self.norm = nn.RMSNorm(dim)
-        self.head = nn.Linear(dim, vocab_size, bias=False)
+        self.norm = nn.RMSNorm(config.dim)
+        self.head = nn.Linear(config.dim, config.vocab_size, bias=False)
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
