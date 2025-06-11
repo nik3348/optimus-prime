@@ -7,6 +7,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.amp import autocast, GradScaler
 from torch.utils.checkpoint import checkpoint
+from torch.utils.tensorboard import SummaryWriter
 
 from torch.utils.data import DataLoader
 from transformers import GPT2Tokenizer
@@ -339,6 +340,9 @@ class AverageMeter:
 
 
 def train_model(model, train_loader, val_loader, config: ModelConfig, device='cuda'):
+    # Initialize TensorBoard writer
+    writer = SummaryWriter(log_dir=Path(config.save_dir) / 'tensorboard')
+
     # Initialize optimizer with weight decay
     no_decay = ["bias", "LayerNorm.weight"]
     optimizer_grouped_parameters = [
@@ -433,6 +437,13 @@ def train_model(model, train_loader, val_loader, config: ModelConfig, device='cu
                     'lr': f'{scheduler.get_last_lr()[0]:.2e}'
                 })
 
+                # Log training metrics to TensorBoard
+                global_step = epoch * len(train_loader) + batch_idx
+                writer.add_scalar('train/loss', loss.item() *
+                                  config.gradient_accumulation_steps, global_step)
+                writer.add_scalar('train/learning_rate',
+                                  scheduler.get_last_lr()[0], global_step)
+
             except RuntimeError as e:
                 if "out of memory" in str(e):
                     logger.error("GPU OOM in batch. Skipping batch.")
@@ -468,6 +479,9 @@ def train_model(model, train_loader, val_loader, config: ModelConfig, device='cu
                         continue
                     raise e
 
+        # Log validation metrics to TensorBoard
+        writer.add_scalar('val/loss', val_loss.avg, epoch)
+
         logger.info(
             f'Epoch {epoch + 1}: Train Loss: {train_loss.avg:.4f}, Val Loss: {val_loss.avg:.4f}')
 
@@ -484,6 +498,9 @@ def train_model(model, train_loader, val_loader, config: ModelConfig, device='cu
             }, save_dir / 'best_model.pt')
             logger.info(
                 f'Saved best model with validation loss: {val_loss.avg:.4f}')
+
+    # Close TensorBoard writer
+    writer.close()
 
 
 def main():
