@@ -105,7 +105,9 @@ def train_epoch(
     total_loss = 0
     num_batches = len(dataloader)
 
-    for batch_idx, batch in enumerate(tqdm(dataloader, desc="Training")):
+    # Add a progress bar for training
+    progress_bar = tqdm(dataloader, desc=f"Epoch {epoch+1} Training")
+    for batch_idx, batch in enumerate(progress_bar):
         try:
             input_ids = batch['input_ids'].to(device)
             attention_mask = batch['attention_mask'].to(device)
@@ -114,8 +116,7 @@ def train_epoch(
             optimizer.zero_grad()
 
             with torch.autocast(device_type='cuda', dtype=torch.float16):
-                logits, _ = model(
-                    input_ids, attn_mask=attention_mask, training_mode=True)
+                logits, _ = model(input_ids, attn_mask=attention_mask)
                 shift_logits = logits[..., :-1, :].contiguous()
                 shift_labels = labels[..., 1:].contiguous()
                 loss = torch.nn.functional.cross_entropy(
@@ -131,19 +132,24 @@ def train_epoch(
             scaler.step(optimizer)
             scaler.update()
 
-            total_loss += loss.item()
+            current_loss = loss.item()
+            total_loss += current_loss
 
-            # Log batch-level training loss and learning rate
+            # Log batch-level training loss, learning rate, and update progress bar
             global_step = epoch * num_batches + batch_idx
-            writer.add_scalar('Loss/train_batch', loss.item(), global_step)
+            writer.add_scalar('Loss/train_batch', current_loss, global_step)
             writer.add_scalar(
                 'Learning_rate', optimizer.param_groups[0]['lr'], global_step)
+            progress_bar.set_postfix(
+                loss=f"{current_loss:.4f}", avg_loss=f"{total_loss/(batch_idx+1):.4f}")
 
         except Exception as e:
-            print(f"Error during training step: {str(e)}")
+            print(f"Error during training step (batch {batch_idx}): {str(e)}")
             continue
 
-    return total_loss / num_batches
+    avg_train_loss = total_loss / num_batches
+    writer.add_scalar('Loss/train_epoch_avg', avg_train_loss, epoch)
+    return avg_train_loss
 
 
 def validate(
@@ -169,16 +175,17 @@ def validate(
     total_loss = 0
     num_batches = len(dataloader)
 
+    # Add a progress bar for validation
+    progress_bar = tqdm(dataloader, desc=f"Epoch {epoch+1} Validation")
     with torch.no_grad():
-        for batch_idx, batch in enumerate(tqdm(dataloader, desc="Validation")):
+        for batch_idx, batch in enumerate(progress_bar):
             try:
                 input_ids = batch['input_ids'].to(device)
                 attention_mask = batch['attention_mask'].to(device)
                 labels = batch['labels'].to(device)
 
                 with torch.autocast(device_type='cuda', dtype=torch.float16):
-                    logits, _ = model(
-                        input_ids, attn_mask=attention_mask, training_mode=True)
+                    logits, _ = model(input_ids, attn_mask=attention_mask)
                     shift_logits = logits[..., :-1, :].contiguous()
                     shift_labels = labels[..., 1:].contiguous()
                     loss = torch.nn.functional.cross_entropy(
@@ -187,17 +194,23 @@ def validate(
                         ignore_index=IGNORE_INDEX
                     )
 
-                total_loss += loss.item()
+                current_loss = loss.item()
+                total_loss += current_loss
 
-                # Log batch-level validation loss
+                # Log batch-level validation loss and update progress bar
                 global_step = epoch * num_batches + batch_idx
-                writer.add_scalar('Loss/val_batch', loss.item(), global_step)
+                writer.add_scalar('Loss/val_batch', current_loss, global_step)
+                progress_bar.set_postfix(
+                    loss=f"{current_loss:.4f}", avg_loss=f"{total_loss/(batch_idx+1):.4f}")
 
             except Exception as e:
-                print(f"Error during validation step: {str(e)}")
+                print(
+                    f"Error during validation step (batch {batch_idx}): {str(e)}")
                 continue
 
-    return total_loss / num_batches
+    avg_val_loss = total_loss / num_batches
+    writer.add_scalar('Loss/val_epoch_avg', avg_val_loss, epoch)
+    return avg_val_loss
 
 
 def save_checkpoint(
@@ -233,11 +246,16 @@ def save_checkpoint(
     }
 
     # Save latest checkpoint
-    torch.save(checkpoint, checkpoint_dir / "latest_model.pt")
+    latest_path = checkpoint_dir / "latest_model.pt"
+    torch.save(checkpoint, latest_path)
+    print(f"Saved latest checkpoint to {latest_path}")
 
     # Save best checkpoint if this is the best model
     if is_best:
-        torch.save(checkpoint, checkpoint_dir / "best_model.pt")
+        best_path = checkpoint_dir / "best_model.pt"
+        torch.save(checkpoint, best_path)
+        print(
+            f"Saved best checkpoint to {best_path} (Validation Loss: {val_loss:.4f})")
 
 
 def load_checkpoint(
@@ -263,16 +281,31 @@ def load_checkpoint(
         return 0, float('inf')
 
     print(f"Loading checkpoint from {checkpoint_path}")
-    checkpoint = torch.load(checkpoint_path)
+    try:
+        # Load to CPU first to avoid device issues
+        checkpoint = torch.load(checkpoint_path, map_location='cpu')
+    except Exception as e:
+        print(f"Error loading checkpoint: {str(e)}")
+        print("Could not load checkpoint. Starting from scratch.")
+        return 0, float('inf')
 
+    # Load model weights
     model.load_state_dict(checkpoint['model_state_dict'])
-    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-    scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
 
-    last_epoch = checkpoint['epoch']
-    best_val_loss = checkpoint['val_loss']
+    # Load optimizer state if available
+    if 'optimizer_state_dict' in checkpoint:
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
 
-    print(f"Resuming from epoch {last_epoch + 1}")
+    # Load scheduler state if available
+    if 'scheduler_state_dict' in checkpoint:
+        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+
+    # Get epoch and validation loss
+    last_epoch = checkpoint.get('epoch', 0)
+    best_val_loss = checkpoint.get('val_loss', float('inf'))
+
+    print(
+        f"Successfully resumed from epoch {last_epoch + 1} with best validation loss: {best_val_loss:.4f}")
     return last_epoch + 1, best_val_loss
 
 
@@ -287,6 +320,8 @@ def main():
 
     # Initialize tensorboard
     writer = SummaryWriter(training_config.tensorboard_dir)
+    print(
+        f"TensorBoard logs will be saved to: {training_config.tensorboard_dir}")
 
     # Initialize model
     model = Transformer(
@@ -295,17 +330,41 @@ def main():
         dropout=0.0
     ).to(device)
 
+    # Print model parameters
+    total_params = sum(p.numel()
+                       for p in model.parameters() if p.requires_grad)
+    print("\n--- Model Information ---")
+    print("Model: Transformer")
+    print(f"Total trainable parameters: {total_params:,}")
+    print("Model Configuration:")
+    print(f"  Vocabulary Size: {model_config.vocab_size}")
+    print("-------------------------")
+
     # Load tokenizer
     tokenizer = AutoTokenizer.from_pretrained("gpt2")
-    tokenizer.pad_token = getattr(tokenizer, PAD_TOKEN)
+    # Ensure pad_token is set for consistency in DataLoader
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+        print(f"Tokenizer's pad_token set to eos_token: {tokenizer.pad_token}")
+    else:
+        print(f"Tokenizer's pad_token: {tokenizer.pad_token}")
 
     # Load dataset
-    print(f"Loading dataset: {training_config.dataset_name}")
-    dataset = load_dataset(
-        training_config.dataset_name,
-        split="train",
-        num_proc=training_config.num_workers
-    ).select(range(training_config.dataset_size))
+    print(f"\nLoading dataset: {training_config.dataset_name}")
+    try:
+        dataset = load_dataset(
+            training_config.dataset_name,
+            split="train",
+            num_proc=training_config.num_workers
+        )
+        if training_config.dataset_size > 0:
+            dataset = dataset.select(
+                range(min(training_config.dataset_size, len(dataset))))
+        print(f"Total dataset size: {len(dataset)}")
+    except Exception as e:
+        print(f"Error loading dataset: {str(e)}")
+        print("Exiting training.")
+        return
 
     # Create dataloaders
     train_size = int(training_config.train_val_split * len(dataset))
@@ -315,9 +374,14 @@ def main():
         [train_size, val_size]
     )
 
+    print(f"Train dataset size: {len(train_dataset)}")
+    print(f"Validation dataset size: {len(val_dataset)}")
+
     train_dataloader = create_dataloader(
         train_dataset, tokenizer, training_config)
     val_dataloader = create_dataloader(val_dataset, tokenizer, training_config)
+    print(f"Training batches per epoch: {len(train_dataloader)}")
+    print(f"Validation batches per epoch: {len(val_dataloader)}")
 
     # Initialize optimizer and scheduler
     optimizer = AdamW(
@@ -325,11 +389,23 @@ def main():
         lr=training_config.learning_rate,
         weight_decay=training_config.weight_decay
     )
+    # T_max should be the total number of training steps (batches * epochs)
+    total_training_steps = len(train_dataloader) * training_config.num_epochs
     scheduler = CosineAnnealingLR(
         optimizer,
-        T_max=len(train_dataloader) * training_config.num_epochs
+        T_max=total_training_steps
     )
     scaler = torch.amp.GradScaler('cuda')
+
+    print("\n--- Training Configuration ---")
+    print(f"Learning Rate: {training_config.learning_rate}")
+    print(f"Weight Decay: {training_config.weight_decay}")
+    print(f"Batch Size: {training_config.batch_size}")
+    print(f"Number of Epochs: {training_config.num_epochs}")
+    print(f"Gradient Clip Value: {training_config.gradient_clip_val}")
+    print("Mixed Precision (AMP): Enabled (float16)")
+    print(f"Checkpoint Directory: {training_config.checkpoint_dir}")
+    print("-----------------------------")
 
     # Load checkpoint if exists
     start_epoch, best_val_loss = load_checkpoint(
@@ -341,7 +417,7 @@ def main():
 
     # Training loop
     for epoch in range(start_epoch, training_config.num_epochs):
-        print(f"\nEpoch {epoch + 1}/{training_config.num_epochs}")
+        print(f"\n--- Epoch {epoch + 1}/{training_config.num_epochs} ---")
 
         # Train
         train_loss = train_epoch(
@@ -356,15 +432,19 @@ def main():
         )
         scheduler.step()
 
-        print(f"Training loss: {train_loss:.4f}")
+        print(f"Epoch {epoch + 1} Average Training Loss: {train_loss:.4f}")
+        writer.add_scalar('Loss/epoch_avg_train', train_loss, epoch)
 
         # Validate
         val_loss = validate(model, val_dataloader, device, writer, epoch)
-        print(f"Validation loss: {val_loss:.4f}")
+        print(f"Epoch {epoch + 1} Average Validation Loss: {val_loss:.4f}")
+        writer.add_scalar('Loss/epoch_avg_val', val_loss, epoch)
 
         # Save checkpoint
         is_best = val_loss < best_val_loss
         if is_best:
+            print(
+                f"Validation loss improved from {best_val_loss:.4f} to {val_loss:.4f}. Saving best model.")
             best_val_loss = val_loss
         save_checkpoint(
             model,
@@ -375,9 +455,11 @@ def main():
             training_config,
             is_best
         )
+        print(f"Current best validation loss: {best_val_loss:.4f}")
 
     writer.close()
-    print("Training completed!")
+    print("\n--- Training completed! ---")
+    print(f"Final best validation loss: {best_val_loss:.4f}")
 
 
 if __name__ == "__main__":

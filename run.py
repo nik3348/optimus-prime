@@ -1,120 +1,156 @@
 import torch
-from transformers import GPT2Tokenizer
-from pathlib import Path
-import logging
-from main import ModelConfig, DecoderOnlyTransformer
-
-# Set up logging
-logging.basicConfig(level=logging.INFO, format='%(message)s')
-logger = logging.getLogger(__name__)
+from transformers import AutoTokenizer
+from model import Transformer
+from config import ModelConfig, TrainingConfig
 
 
-def load_model(checkpoint_path, device='cuda'):
-    """Load the model from checkpoint"""
-    config = ModelConfig()
-    model = DecoderOnlyTransformer(config).to(device)
+def load_model(checkpoint_path: str, device: torch.device) -> tuple[Transformer, AutoTokenizer]:
+    """Load the model and tokenizer from checkpoint.
 
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    Args:
+        checkpoint_path: Path to the model checkpoint
+        device: Device to load the model on
+
+    Returns:
+        Tuple of (model, tokenizer)
+    """
+    # Load configuration and initialize model
+    model_config = ModelConfig()
+    model = Transformer(config=model_config).to(device)
+
+    # Load checkpoint
+    checkpoint = torch.load(
+        checkpoint_path, map_location=device, weights_only=False)
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
-    return model
+
+    # Initialize tokenizer
+    tokenizer = AutoTokenizer.from_pretrained("gpt2")
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    return model, tokenizer
 
 
-def generate_text(model, tokenizer, prompt, max_length=100, temperature=0.7, top_p=0.9, device='cuda'):
-    """Generate text using the model"""
+def generate_text(
+    model: Transformer,
+    tokenizer: AutoTokenizer,
+    prompt: str,
+    max_length: int = 100,
+    temperature: float = 0.7,
+    top_p: float = 0.9,
+    device: torch.device = torch.device(
+        'cuda' if torch.cuda.is_available() else 'cpu')
+) -> str:
+    """Generate text from the model given a prompt.
+
+    Args:
+        model: The loaded model
+        tokenizer: The tokenizer
+        prompt: Input prompt text
+        max_length: Maximum length of generated text
+        temperature: Sampling temperature
+        top_p: Top-p sampling parameter
+        device: Device to run generation on
+
+    Returns:
+        Generated text
+    """
     # Encode the prompt
-    input_ids = tokenizer.encode(prompt, return_tensors='pt').to(device)
+    inputs = tokenizer(prompt, return_tensors="pt").to(device)
+    input_ids = inputs["input_ids"]
 
     # Initialize KV cache
-    kv_cache = None
+    kv_caches = None
 
-    # Generate tokens
-    generated_ids = input_ids
+    # Generate
     with torch.no_grad():
-        for _ in range(max_length):
-            # Get model predictions
-            logits, kv_cache = model(generated_ids, kv_cache)
+        with torch.autocast(device_type='cuda', dtype=torch.float16):
+            for _ in range(max_length):
+                # Get model predictions with KV cache
+                logits, kv_caches = model(input_ids, kv_caches=kv_caches)
+                next_token_logits = logits[:, -1, :] / temperature
 
-            # Get next token logits
-            next_token_logits = logits[:, -1, :] / temperature
+                # Apply top-p sampling
+                probs = torch.softmax(next_token_logits, dim=-1)
+                sorted_probs, sorted_indices = torch.sort(
+                    probs, descending=True)
+                cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
+                sorted_indices_to_remove = cumulative_probs > top_p
+                sorted_indices_to_remove[...,
+                                         1:] = sorted_indices_to_remove[..., :-1].clone()
+                sorted_indices_to_remove[..., 0] = 0
+                indices_to_remove = sorted_indices_to_remove.scatter(
+                    1, sorted_indices, sorted_indices_to_remove)
+                probs[indices_to_remove] = 0.0
+                probs = probs / probs.sum(dim=-1, keepdim=True)
 
-            # Apply top-p (nucleus) sampling
-            sorted_logits, sorted_indices = torch.sort(
-                next_token_logits, descending=True)
-            cumulative_probs = torch.cumsum(
-                torch.softmax(sorted_logits, dim=-1), dim=-1)
+                # Sample next token
+                next_token = torch.multinomial(probs, num_samples=1)
+                input_ids = torch.cat([input_ids, next_token], dim=1)
 
-            # Remove tokens with cumulative probability above the threshold
-            sorted_indices_to_remove = cumulative_probs > top_p
-            sorted_indices_to_remove[...,
-                                     1:] = sorted_indices_to_remove[..., :-1].clone()
-            sorted_indices_to_remove[..., 0] = 0
-
-            indices_to_remove = sorted_indices_to_remove.scatter(
-                1, sorted_indices, sorted_indices_to_remove)
-            next_token_logits[indices_to_remove] = float('-inf')
-
-            # Sample next token
-            probs = torch.softmax(next_token_logits, dim=-1)
-            next_token = torch.multinomial(probs, num_samples=1)
-
-            # Append to generated sequence
-            generated_ids = torch.cat([generated_ids, next_token], dim=1)
-
-            # Stop if we generate an EOS token
-            if next_token.item() == tokenizer.eos_token_id:
-                break
+                # Stop if we generate an EOS token
+                if next_token.item() == tokenizer.eos_token_id:
+                    break
 
     # Decode and return the generated text
-    generated_text = tokenizer.decode(
-        generated_ids[0], skip_special_tokens=True)
+    generated_text = tokenizer.decode(input_ids[0], skip_special_tokens=True)
     return generated_text
 
 
 def main():
     # Set device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    logger.info(f"Using device: {device}")
+    print(f"Using device: {device}")
 
-    # Initialize tokenizer
-    tokenizer = GPT2Tokenizer.from_pretrained('gpt2',
-                                              model_max_length=2048,
-                                              padding_side='right')
-    tokenizer.pad_token = tokenizer.eos_token
+    # Initialize configurations
+    training_config = TrainingConfig()
 
-    # Load model
-    checkpoint_path = Path('checkpoints/best_model.pt')
-    if not checkpoint_path.exists():
-        logger.error(f"No model checkpoint found at {checkpoint_path}")
+    # Load model and tokenizer
+    try:
+        model, tokenizer = load_model(
+            training_config.checkpoint_dir + "/best_model.pt", device)
+        print(
+            f"Successfully loaded model from {training_config.checkpoint_dir}/best_model.pt")
+    except Exception as e:
+        print(f"Error loading model: {str(e)}")
         return
 
-    model = load_model(checkpoint_path, device)
-    logger.info("Model loaded successfully")
+    print("\nModel loaded successfully! You can now start generating text.")
+    print("Type 'quit' to exit.")
+    print("-" * 50)
 
-    # Interactive generation loop
-    print("\nEnter your prompt (type 'quit' to exit):")
     while True:
-        prompt = input("\nPrompt: ").strip()
-        if prompt.lower() == 'quit':
-            break
-
-        if not prompt:
-            continue
-
         try:
+            # Get user input
+            prompt = input("\nEnter your prompt: ").strip()
+            if prompt.lower() == 'quit':
+                break
+
+            if not prompt:
+                print("Please enter a non-empty prompt.")
+                continue
+
+            # Generate text
             generated_text = generate_text(
-                model,
-                tokenizer,
-                prompt,
-                max_length=100,
-                temperature=0.7,
-                top_p=0.9,
+                model=model,
+                tokenizer=tokenizer,
+                prompt=prompt,
                 device=device
             )
+
+            # Print the generated text
             print("\nGenerated text:")
+            print("-" * 50)
             print(generated_text)
+            print("-" * 50)
+
+        except KeyboardInterrupt:
+            print("\nExiting...")
+            break
         except Exception as e:
-            logger.error(f"Error during generation: {str(e)}")
+            print(f"Error during generation: {str(e)}")
+            continue
 
 
 if __name__ == "__main__":
