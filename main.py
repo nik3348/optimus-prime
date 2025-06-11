@@ -494,6 +494,14 @@ def main():
     config = ModelConfig()
     model = DecoderOnlyTransformer(config).to(device)
 
+    # Load model weights if they exist
+    if (Path(config.save_dir) / 'best_model.pt').exists():
+        checkpoint = torch.load(Path(config.save_dir) / 'best_model.pt')
+        model.load_state_dict(checkpoint['model_state_dict'])
+        logger.info(f"Loaded model from epoch {checkpoint['epoch']}")
+    else:
+        logger.info("No existing model found. Starting from scratch.")
+
     if hasattr(torch.nn.functional, 'scaled_dot_product_attention'):
         torch.backends.cuda.enable_flash_sdp(True)
         torch.backends.cuda.enable_mem_efficient_sdp(True)
