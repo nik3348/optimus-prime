@@ -1,7 +1,8 @@
+import math
 import torch
+
 from torch.utils.data import DataLoader
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.tensorboard import SummaryWriter
 
 from datasets import load_dataset
@@ -80,6 +81,7 @@ def train_epoch(
     model: torch.nn.Module,
     dataloader: DataLoader,
     optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler.LRScheduler,
     device: torch.device,
     scaler: torch.amp.GradScaler,
     config: TrainingConfig,
@@ -131,6 +133,7 @@ def train_epoch(
                 model.parameters(), config.gradient_clip_val)
             scaler.step(optimizer)
             scaler.update()
+            scheduler.step()
 
             current_loss = loss.item()
             total_loss += current_loss
@@ -216,7 +219,7 @@ def validate(
 def save_checkpoint(
     model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
-    scheduler: torch.optim.lr_scheduler._LRScheduler,
+    scheduler: torch.optim.lr_scheduler.LRScheduler,
     epoch: int,
     val_loss: float,
     config: TrainingConfig,
@@ -261,7 +264,7 @@ def save_checkpoint(
 def load_checkpoint(
     model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
-    scheduler: torch.optim.lr_scheduler._LRScheduler,
+    scheduler: torch.optim.lr_scheduler.LRScheduler,
     config: TrainingConfig
 ) -> tuple[int, float]:
     """Load the latest checkpoint if it exists.
@@ -374,14 +377,20 @@ def main():
         [train_size, val_size]
     )
 
-    print(f"Train dataset size: {len(train_dataset)}")
-    print(f"Validation dataset size: {len(val_dataset)}")
-
     train_dataloader = create_dataloader(
         train_dataset, tokenizer, training_config)
     val_dataloader = create_dataloader(val_dataset, tokenizer, training_config)
-    print(f"Training batches per epoch: {len(train_dataloader)}")
-    print(f"Validation batches per epoch: {len(val_dataloader)}")
+
+    print("\n--- Dataset Information ---")
+    print(f"Total dataset size: {len(dataset)}")
+    print(f"Training set size: {len(train_dataset)}")
+    print(f"Validation set size: {len(val_dataset)}")
+    print(f"Batch size: {training_config.batch_size}")
+    print("\n--- Batches per Epoch ---")
+    print(f"Training: {len(train_dataloader)} batches ({len(train_dataset)} examples / {training_config.batch_size} batch size)")
+    print(
+        f"Validation: {len(val_dataloader)} batches ({len(val_dataset)} examples / {training_config.batch_size} batch size)")
+    print("-------------------------")
 
     # Initialize optimizer and scheduler
     optimizer = AdamW(
@@ -391,9 +400,34 @@ def main():
     )
     # T_max should be the total number of training steps (batches * epochs)
     total_training_steps = len(train_dataloader) * training_config.num_epochs
-    scheduler = CosineAnnealingLR(
+    # Calculate warmup steps (10% of total training steps)
+    warmup_steps = int(total_training_steps * 0.1)
+
+    # Custom Linear Warmup with Cosine Decay scheduler
+    class LinearWarmupCosineDecayScheduler(torch.optim.lr_scheduler.LRScheduler):
+        def __init__(self, optimizer, warmup_steps, total_steps, min_lr=0):
+            self.warmup_steps = warmup_steps
+            self.total_steps = total_steps
+            self.min_lr = min_lr
+            super().__init__(optimizer)
+
+        def get_lr(self):
+            step = self.last_epoch
+            if step < self.warmup_steps:
+                # Linear warmup
+                return [base_lr * (step / self.warmup_steps) for base_lr in self.base_lrs]
+            else:
+                # Cosine decay
+                progress = (step - self.warmup_steps) / \
+                    (self.total_steps - self.warmup_steps)
+                return [self.min_lr + 0.5 * (base_lr - self.min_lr) *
+                        (1 + math.cos(math.pi * progress)) for base_lr in self.base_lrs]
+
+    scheduler = LinearWarmupCosineDecayScheduler(
         optimizer,
-        T_max=total_training_steps
+        warmup_steps=warmup_steps,
+        total_steps=total_training_steps,
+        min_lr=0
     )
     scaler = torch.amp.GradScaler('cuda')
 
@@ -424,13 +458,13 @@ def main():
             model,
             train_dataloader,
             optimizer,
+            scheduler,
             device,
             scaler,
             training_config,
             writer,
             epoch
         )
-        scheduler.step()
 
         print(f"Epoch {epoch + 1} Average Training Loss: {train_loss:.4f}")
         writer.add_scalar('Loss/epoch_avg_train', train_loss, epoch)

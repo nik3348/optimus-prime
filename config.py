@@ -4,7 +4,7 @@ from dataclasses import dataclass
 class ModelConfig:
     """Configuration for model architecture."""
     vocab_size: int = 50257  # GPT-2 tokenizer vocabulary size
-    dim: int = 512
+    dim: int = 1024
     depth: int = 6
     num_heads: int = 8
     num_kv_heads: int = 2
@@ -18,7 +18,7 @@ class TrainingConfig:
     max_length: int = 512
     learning_rate: float = 1e-4
     weight_decay: float = 0.01
-    num_epochs: int = 3
+    num_epochs: int = 5
     train_val_split: float = 0.9
     gradient_clip_val: float = 1.0
 
