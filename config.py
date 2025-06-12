@@ -1,11 +1,12 @@
 from dataclasses import dataclass
 
+
 @dataclass
 class ModelConfig:
     """Configuration for model architecture."""
     vocab_size: int = 50257  # GPT-2 tokenizer vocabulary size
     dim: int = 1024
-    depth: int = 6
+    depth: int = 8
     num_heads: int = 8
     num_kv_heads: int = 2
     checkpointing: bool = True
@@ -29,4 +30,4 @@ class TrainingConfig:
 
     # Paths
     checkpoint_dir: str = "checkpoints"
-    tensorboard_dir: str = "runs/finemath-training"
+    tensorboard_dir: str = "runs"

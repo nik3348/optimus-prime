@@ -2,6 +2,19 @@
 
 A modern, efficient transformer-based language model with several optimizations and best practices. The model features grouped query attention, rotary embeddings, and other architectural improvements for better performance and efficiency.
 
+## Table of Contents
+
+- [Features](#features)
+- [Model Architecture](#model-architecture)
+- [Installation](#installation)
+- [Usage](#usage)
+- [Model Configuration](#model-configuration)
+- [Training Data](#training-data)
+- [Performance Optimizations](#performance-optimizations)
+- [Project Structure](#project-structure)
+- [Contributing](#contributing)
+- [License](#license)
+
 ## Features
 
 - **Grouped Query Attention (GQA)**: Reduces memory usage while maintaining model quality by sharing key and value heads across multiple query heads
@@ -23,24 +36,31 @@ The model is based on a decoder-only transformer architecture with the following
 - RMSNorm for normalization
 - Configurable model size and hyperparameters
 
-## Requirements
+## Installation
 
-This project uses Poetry for dependency management. Make sure you have Poetry installed on your system. If not, you can install it following the [official installation guide](https://python-poetry.org/docs/#installation).
+### Prerequisites
 
-### Installation
+- Python 3.8 or higher
+- CUDA-capable GPU (recommended for training)
+- Poetry for dependency management
+
+### Setup
 
 1. Clone the repository:
+
 ```bash
 git clone https://github.com/yourusername/optimus-prime.git
 cd optimus-prime
 ```
 
 2. Install dependencies using Poetry:
+
 ```bash
 poetry install
 ```
 
 3. Activate the virtual environment:
+
 ```bash
 poetry shell
 ```
@@ -52,10 +72,11 @@ poetry shell
 To train the model:
 
 ```bash
-python main.py
+python train.py
 ```
 
 The training script includes:
+
 - Automatic mixed precision training
 - Gradient checkpointing
 - Dynamic batch size optimization
@@ -68,75 +89,86 @@ The training script includes:
 To run the model for text generation:
 
 ```bash
-python run_model.py
+python run.py
 ```
 
 The inference script provides an interactive interface where you can:
+
 - Enter prompts and get generated text
 - Control generation parameters (temperature, top-p)
 - Generate text with efficient KV caching
 
 ## Model Configuration
 
-The model can be configured through the `ModelConfig` class in `main.py`. Key parameters include:
+The model can be configured through the `ModelConfig` and `TrainingConfig` classes in `config.py`. Key parameters include:
 
 ```python
 @dataclass
 class ModelConfig:
-    vocab_size: int = 50257
-    dim: int = 768
-    num_heads: int = 12
-    num_kv_heads: int = 4
-    num_layers: int = 12
-    hidden_dim: int = 3072
-    dropout: float = 0.1
-    max_seq_len: int = 2048
+    """Configuration for model architecture."""
+    vocab_size: int = 50257  # GPT-2 tokenizer vocabulary size
+    dim: int = 1024
+    depth: int = 8
+    num_heads: int = 8
+    num_kv_heads: int = 2
+    checkpointing: bool = True
+
+@dataclass
+class TrainingConfig:
+    """Configuration for model training."""
+    # Training parameters
+    batch_size: int = 8
+    max_length: int = 512
     learning_rate: float = 1e-4
-    batch_size: int = 32
-    num_epochs: int = 1
-    save_dir: str = "checkpoints"
-    use_amp: bool = True
-    warmup_steps: int = 1000
-    gradient_clip_val: float = 1.0
-    gradient_accumulation_steps: int = 1
     weight_decay: float = 0.01
-    beta1: float = 0.9
-    beta2: float = 0.999
-    eps: float = 1e-8
+    num_epochs: int = 5
+    train_val_split: float = 0.9
+    gradient_clip_val: float = 1.0
+
+    # Dataset parameters
+    dataset_name: str = "databricks/databricks-dolly-15k"
+    dataset_size: int = 1000
+    num_workers: int = 4
+
+    # Paths
+    checkpoint_dir: str = "checkpoints"
+    tensorboard_dir: str = "runs"
 ```
 
 ## Training Data
 
-The model is trained on the FineWeb-Edu dataset, specifically using the CC-MAIN-2024-10 split. The training script includes efficient data loading and preprocessing.
+The model is trained on the Databricks Dolly 15k dataset, with configurable dataset size and train/validation split. The training script includes efficient data loading and preprocessing with multi-worker support.
 
 ## Performance Optimizations
 
-1. **Memory Efficiency**:
-   - Gradient checkpointing
-   - Dynamic batch size optimization
-   - Efficient KV caching during inference
+### Memory Efficiency
 
-2. **Training Speed**:
-   - Automatic Mixed Precision (AMP)
-   - Optimized attention implementation
-   - Efficient data loading with prefetching
+- Gradient checkpointing
+- Dynamic batch size optimization
+- Efficient KV caching during inference
 
-3. **Inference Quality**:
-   - Top-p (nucleus) sampling
-   - Temperature control
-   - Proper handling of special tokens
+### Training Speed
 
-## File Structure
+- Automatic Mixed Precision (AMP)
+- Optimized attention implementation
+- Efficient data loading with prefetching
 
-- `main.py`: Contains the model architecture and training code
-- `run_model.py`: Provides an interface for model inference
-- `checkpoints/`: Directory for saved model checkpoints
-- `pyproject.toml`: Poetry configuration and dependencies
+### Inference Quality
 
-## Contributing
+- Top-p (nucleus) sampling
+- Temperature control
+- Proper handling of special tokens
 
-Feel free to submit issues and enhancement requests!
+## Project Structure
 
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
+```
+optimus-prime/
+├── train.py           # Training script
+├── run.py             # Model inference interface
+├── model.py           # Model architecture implementation
+├── config.py          # Configuration and hyperparameters
+├── checkpoints/       # Saved model checkpoints
+├── runs/              # Training logs and metrics
+├── pyproject.toml     # Poetry configuration and dependencies
+└── poetry.lock        # Locked dependencies
+```
