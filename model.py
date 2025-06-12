@@ -17,10 +17,8 @@ class SwiGLU(nn.Module):
 
 
 class TransformerBlock(nn.Module):
-    def __init__(self, config: ModelConfig, mlp_ratio=4, dropout=0.0):
+    def __init__(self, config: ModelConfig, mlp_ratio=4):
         super().__init__()
-        self.norm1 = nn.RMSNorm(config.dim)
-
         # Create projection layers for attention
         q_proj = nn.Linear(config.dim, config.dim, bias=False)
         k_proj = nn.Linear(
@@ -46,48 +44,47 @@ class TransformerBlock(nn.Module):
             output_proj=out_proj,
             pos_embeddings=pos_embeddings,
             is_causal=True,
-            attn_dropout=dropout
         )
 
+        self.norm1 = nn.RMSNorm(config.dim)
         self.norm2 = nn.RMSNorm(config.dim)
         self.mlp = SwiGLU(config.dim, int(config.dim * mlp_ratio))
-        self.dropout = nn.Dropout(dropout)
         self.checkpointing = config.checkpointing
 
-    def _forward_no_cache(self, x, attn_mask):
-        """Forward pass without caching, used for checkpointing during training."""
+    def _forward_inner(self, x, kv_input=None):
+        """
+        Common forward pass logic for both training (with/without checkpointing) and inference.
+        """
         normed_x = self.norm1(x)
-        attn_out = self.attn(normed_x, y=normed_x, mask=attn_mask)
-        x = x + self.dropout(attn_out)
-        x = x + self.dropout(self.mlp(self.norm2(x)))
-        return x
 
-    def forward(self, x, attn_mask=None, kv_cache=None):
+        # Determine kv_input
+        actual_kv_input = normed_x if kv_input is None else kv_input
+        attn_out = self.attn(normed_x, y=actual_kv_input)
+
+        x = x + attn_out
+        x = x + self.mlp(self.norm2(x))
+
+        return x, actual_kv_input  # Return kv_input to pass it up for actual caching
+
+    def forward(self, x, kv_cache=None):
         if self.checkpointing and self.training:
-            x = checkpoint(self._forward_no_cache, x,
-                           attn_mask, use_reentrant=False)
-            return x, None
+            # When checkpointing, we pass None for kv_cache, meaning kv_input will be normed_x
+            # and attn_mask is passed directly.
+            x_out, _ = checkpoint(self._forward_inner, x, use_reentrant=False)
+            # Return None for kv_cache as it's not cached during checkpointed training
+            return x_out, None
 
-        # Normalize input once and reuse
-        normed_x = self.norm1(x)
-        kv_input = kv_cache if kv_cache is not None else normed_x
-
-        # Attention
-        attn_out = self.attn(normed_x, y=kv_input, mask=attn_mask)
-        x = x + self.dropout(attn_out)
-
-        # MLP
-        x = x + self.dropout(self.mlp(self.norm2(x)))
-
-        return x, kv_input
+        # For regular training (no checkpointing) or inference
+        x_out, updated_kv_input = self._forward_inner(x, kv_cache)
+        return x_out, updated_kv_input
 
 
 class Transformer(nn.Module):
-    def __init__(self, config: ModelConfig, mlp_ratio=4, dropout=0.0):
+    def __init__(self, config: ModelConfig, mlp_ratio=4):
         super().__init__()
         self.embed = nn.Embedding(config.vocab_size, config.dim)
         self.layers = nn.ModuleList([
-            TransformerBlock(config, mlp_ratio, dropout) for _ in range(config.depth)
+            TransformerBlock(config, mlp_ratio) for _ in range(config.depth)
         ])
         self.norm = nn.RMSNorm(config.dim)
         self.head = nn.Linear(config.dim, config.vocab_size, bias=False)
@@ -99,13 +96,13 @@ class Transformer(nn.Module):
             if getattr(m, "bias", None) is not None:
                 nn.init.zeros_(m.bias)
 
-    def forward(self, input_ids, attn_mask=None, kv_caches=None):
+    def forward(self, input_ids, kv_caches=None):
         x = self.embed(input_ids)
         new_kv_caches = []
 
         for i, layer in enumerate(self.layers):
             kv_cache = None if kv_caches is None else kv_caches[i]
-            x, new_kv = layer(x, attn_mask, kv_cache)
+            x, new_kv = layer(x, kv_cache)
             if not self.training:  # Only cache during inference
                 new_kv_caches.append(new_kv)
 

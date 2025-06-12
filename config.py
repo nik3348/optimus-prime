@@ -25,7 +25,7 @@ class TrainingConfig:
 
     # Dataset parameters
     dataset_name: str = "databricks/databricks-dolly-15k"
-    dataset_size: int = 1000
+    dataset_size: int = 0
     num_workers: int = 4
 
     # Paths

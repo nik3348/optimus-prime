@@ -48,19 +48,12 @@ def create_dataloader(dataset, tokenizer, config: TrainingConfig) -> DataLoader:
                 return_tensors='pt'
             )
 
-            # Create causal mask
-            seq_len = encodings['input_ids'].size(1)
-            mask = torch.triu(torch.ones(seq_len, seq_len), diagonal=1).bool()
-            mask = mask.unsqueeze(0).expand(len(batch), -1, -1)
-
             # Ensure all tensors are contiguous and properly cloned
             input_ids = encodings['input_ids'].contiguous()
-            attention_mask = mask.contiguous()
             labels = input_ids.clone().contiguous()
 
             return {
                 'input_ids': input_ids,
-                'attention_mask': attention_mask,
                 'labels': labels
             }
         except Exception as e:
@@ -110,45 +103,39 @@ def train_epoch(
     # Add a progress bar for training
     progress_bar = tqdm(dataloader, desc=f"Epoch {epoch+1} Training")
     for batch_idx, batch in enumerate(progress_bar):
-        try:
-            input_ids = batch['input_ids'].to(device)
-            attention_mask = batch['attention_mask'].to(device)
-            labels = batch['labels'].to(device)
+        input_ids = batch['input_ids'].to(device)
+        labels = batch['labels'].to(device)
 
-            optimizer.zero_grad()
+        optimizer.zero_grad()
 
-            with torch.autocast(device_type='cuda', dtype=torch.float16):
-                logits, _ = model(input_ids, attn_mask=attention_mask)
-                shift_logits = logits[..., :-1, :].contiguous()
-                shift_labels = labels[..., 1:].contiguous()
-                loss = torch.nn.functional.cross_entropy(
-                    shift_logits.view(-1, shift_logits.size(-1)),
-                    shift_labels.view(-1),
-                    ignore_index=IGNORE_INDEX
-                )
+        with torch.autocast(device_type='cuda', dtype=torch.float16):
+            logits, _ = model(input_ids)
+            shift_logits = logits[..., :-1, :].contiguous()
+            shift_labels = labels[..., 1:].contiguous()
+            loss = torch.nn.functional.cross_entropy(
+                shift_logits.view(-1, shift_logits.size(-1)),
+                shift_labels.view(-1),
+                ignore_index=IGNORE_INDEX
+            )
 
-            scaler.scale(loss).backward()
-            scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(
-                model.parameters(), config.gradient_clip_val)
-            scaler.step(optimizer)
-            scaler.update()
-            scheduler.step()
+        scaler.scale(loss).backward()
+        scaler.unscale_(optimizer)
+        torch.nn.utils.clip_grad_norm_(
+            model.parameters(), config.gradient_clip_val)
+        scaler.step(optimizer)
+        scaler.update()
+        scheduler.step()
 
-            current_loss = loss.item()
-            total_loss += current_loss
+        current_loss = loss.item()
+        total_loss += current_loss
 
-            # Log batch-level training loss, learning rate, and update progress bar
-            global_step = epoch * num_batches + batch_idx
-            writer.add_scalar('Loss/train_batch', current_loss, global_step)
-            writer.add_scalar(
-                'Learning_rate', optimizer.param_groups[0]['lr'], global_step)
-            progress_bar.set_postfix(
-                loss=f"{current_loss:.4f}", avg_loss=f"{total_loss/(batch_idx+1):.4f}")
-
-        except Exception as e:
-            print(f"Error during training step (batch {batch_idx}): {str(e)}")
-            continue
+        # Log batch-level training loss, learning rate, and update progress bar
+        global_step = epoch * num_batches + batch_idx
+        writer.add_scalar('Loss/train_batch', current_loss, global_step)
+        writer.add_scalar(
+            'Learning_rate', optimizer.param_groups[0]['lr'], global_step)
+        progress_bar.set_postfix(
+            loss=f"{current_loss:.4f}", avg_loss=f"{total_loss/(batch_idx+1):.4f}")
 
     avg_train_loss = total_loss / num_batches
     writer.add_scalar('Loss/train_epoch_avg', avg_train_loss, epoch)
@@ -184,11 +171,10 @@ def validate(
         for batch_idx, batch in enumerate(progress_bar):
             try:
                 input_ids = batch['input_ids'].to(device)
-                attention_mask = batch['attention_mask'].to(device)
                 labels = batch['labels'].to(device)
 
                 with torch.autocast(device_type='cuda', dtype=torch.float16):
-                    logits, _ = model(input_ids, attn_mask=attention_mask)
+                    logits, _ = model(input_ids)
                     shift_logits = logits[..., :-1, :].contiguous()
                     shift_labels = labels[..., 1:].contiguous()
                     loss = torch.nn.functional.cross_entropy(
@@ -330,7 +316,6 @@ def main():
     model = Transformer(
         config=model_config,
         mlp_ratio=4,
-        dropout=0.0
     ).to(device)
 
     # Print model parameters
