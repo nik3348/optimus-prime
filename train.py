@@ -109,7 +109,7 @@ def train_epoch(
         optimizer.zero_grad()
 
         with torch.autocast(device_type='cuda', dtype=torch.float16):
-            logits, _ = model(input_ids)
+            logits = model(input_ids)
             shift_logits = logits[..., :-1, :].contiguous()
             shift_labels = labels[..., 1:].contiguous()
             loss = torch.nn.functional.cross_entropy(
@@ -169,33 +169,27 @@ def validate(
     progress_bar = tqdm(dataloader, desc=f"Epoch {epoch+1} Validation")
     with torch.no_grad():
         for batch_idx, batch in enumerate(progress_bar):
-            try:
-                input_ids = batch['input_ids'].to(device)
-                labels = batch['labels'].to(device)
+            input_ids = batch['input_ids'].to(device)
+            labels = batch['labels'].to(device)
 
-                with torch.autocast(device_type='cuda', dtype=torch.float16):
-                    logits, _ = model(input_ids)
-                    shift_logits = logits[..., :-1, :].contiguous()
-                    shift_labels = labels[..., 1:].contiguous()
-                    loss = torch.nn.functional.cross_entropy(
-                        shift_logits.view(-1, shift_logits.size(-1)),
-                        shift_labels.view(-1),
-                        ignore_index=IGNORE_INDEX
-                    )
+            with torch.autocast(device_type='cuda', dtype=torch.float16):
+                logits = model(input_ids)
+                shift_logits = logits[..., :-1, :].contiguous()
+                shift_labels = labels[..., 1:].contiguous()
+                loss = torch.nn.functional.cross_entropy(
+                    shift_logits.view(-1, shift_logits.size(-1)),
+                    shift_labels.view(-1),
+                    ignore_index=IGNORE_INDEX
+                )
 
-                current_loss = loss.item()
-                total_loss += current_loss
+            current_loss = loss.item()
+            total_loss += current_loss
 
-                # Log batch-level validation loss and update progress bar
-                global_step = epoch * num_batches + batch_idx
-                writer.add_scalar('Loss/val_batch', current_loss, global_step)
-                progress_bar.set_postfix(
-                    loss=f"{current_loss:.4f}", avg_loss=f"{total_loss/(batch_idx+1):.4f}")
-
-            except Exception as e:
-                print(
-                    f"Error during validation step (batch {batch_idx}): {str(e)}")
-                continue
+            # Log batch-level validation loss and update progress bar
+            global_step = epoch * num_batches + batch_idx
+            writer.add_scalar('Loss/val_batch', current_loss, global_step)
+            progress_bar.set_postfix(
+                loss=f"{current_loss:.4f}", avg_loss=f"{total_loss/(batch_idx+1):.4f}")
 
     avg_val_loss = total_loss / num_batches
     writer.add_scalar('Loss/val_epoch_avg', avg_val_loss, epoch)

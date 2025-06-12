@@ -60,15 +60,12 @@ def generate_text(
     inputs = tokenizer(prompt, return_tensors="pt").to(device)
     input_ids = inputs["input_ids"]
 
-    # Initialize KV cache
-    kv_caches = None
-
     # Generate
     with torch.no_grad():
         with torch.autocast(device_type='cuda', dtype=torch.float16):
             for _ in range(max_length):
-                # Get model predictions with KV cache
-                logits, kv_caches = model(input_ids, kv_caches=kv_caches)
+                # Get model predictions
+                logits = model(input_ids)
                 next_token_logits = logits[:, -1, :] / temperature
 
                 # Apply top-p sampling

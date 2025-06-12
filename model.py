@@ -19,30 +19,32 @@ class SwiGLU(nn.Module):
 class TransformerBlock(nn.Module):
     def __init__(self, config: ModelConfig, mlp_ratio=4):
         super().__init__()
+        head_dim = config.dim // config.num_heads
+
         # Create projection layers for attention
         q_proj = nn.Linear(config.dim, config.dim, bias=False)
         k_proj = nn.Linear(
-            config.dim, (config.dim // config.num_heads) * config.num_kv_heads, bias=False)
+            config.dim, head_dim * config.num_kv_heads, bias=False)
         v_proj = nn.Linear(
-            config.dim, (config.dim // config.num_heads) * config.num_kv_heads, bias=False)
+            config.dim, head_dim * config.num_kv_heads, bias=False)
         out_proj = nn.Linear(config.dim, config.dim, bias=False)
 
         # Create rotary embeddings
-        pos_embeddings = RotaryPositionalEmbeddings(
-            config.dim // config.num_heads
-        )
+        pos_embeddings = RotaryPositionalEmbeddings(head_dim)
 
         # Initialize MultiHeadAttention with all required components
         self.attn = MultiHeadAttention(
             embed_dim=config.dim,
             num_heads=config.num_heads,
             num_kv_heads=config.num_kv_heads,
-            head_dim=config.dim // config.num_heads,
+            head_dim=head_dim,
             q_proj=q_proj,
             k_proj=k_proj,
             v_proj=v_proj,
             output_proj=out_proj,
             pos_embeddings=pos_embeddings,
+            q_norm=nn.RMSNorm(head_dim),
+            k_norm=nn.RMSNorm(head_dim),
             is_causal=True,
         )
 
@@ -51,32 +53,19 @@ class TransformerBlock(nn.Module):
         self.mlp = SwiGLU(config.dim, int(config.dim * mlp_ratio))
         self.checkpointing = config.checkpointing
 
-    def _forward_inner(self, x, kv_input=None):
-        """
-        Common forward pass logic for both training (with/without checkpointing) and inference.
-        """
+    def forward(self, x):
         normed_x = self.norm1(x)
 
-        # Determine kv_input
-        actual_kv_input = normed_x if kv_input is None else kv_input
-        attn_out = self.attn(normed_x, y=actual_kv_input)
+        if self.checkpointing and self.training:
+            attn_out = checkpoint(
+                self.attn, normed_x, normed_x, use_reentrant=False
+            )
+        else:
+            attn_out = self.attn(normed_x, y=normed_x)
 
         x = x + attn_out
         x = x + self.mlp(self.norm2(x))
-
-        return x, actual_kv_input  # Return kv_input to pass it up for actual caching
-
-    def forward(self, x, kv_cache=None):
-        if self.checkpointing and self.training:
-            # When checkpointing, we pass None for kv_cache, meaning kv_input will be normed_x
-            # and attn_mask is passed directly.
-            x_out, _ = checkpoint(self._forward_inner, x, use_reentrant=False)
-            # Return None for kv_cache as it's not cached during checkpointed training
-            return x_out, None
-
-        # For regular training (no checkpointing) or inference
-        x_out, updated_kv_input = self._forward_inner(x, kv_cache)
-        return x_out, updated_kv_input
+        return x
 
 
 class Transformer(nn.Module):
@@ -96,14 +85,8 @@ class Transformer(nn.Module):
             if getattr(m, "bias", None) is not None:
                 nn.init.zeros_(m.bias)
 
-    def forward(self, input_ids, kv_caches=None):
+    def forward(self, input_ids):
         x = self.embed(input_ids)
-        new_kv_caches = []
-
-        for i, layer in enumerate(self.layers):
-            kv_cache = None if kv_caches is None else kv_caches[i]
-            x, new_kv = layer(x, kv_cache)
-            if not self.training:  # Only cache during inference
-                new_kv_caches.append(new_kv)
-
-        return self.head(self.norm(x)), new_kv_caches if not self.training else None
+        for layer in self.layers:
+            x = layer(x)
+        return self.head(self.norm(x))
