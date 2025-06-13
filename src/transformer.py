@@ -6,22 +6,32 @@ from .attention import MLA
 from .feedforward import SwiGLU
 from config import ModelConfig
 
+
 class MLATransformerBlock(nn.Module):
     """
     Transformer block leveraging MLA attention and SwiGLU feedforward modules.
     """
-    def __init__(self, config: ModelConfig, mlp_ratio=4):
+
+    def __init__(self, config: ModelConfig):
         super().__init__()
-        self.norm1 = nn.RMSNorm(config.dim)
-        self.norm2 = nn.RMSNorm(config.dim)
-        self.attn = MLA(
-            dim=config.dim,
-            num_heads=config.num_heads,
-            kv_compression_dim=config.dim // 2,  # example compression, adjust as needed
-            q_compression_dim=config.dim // 2,   # example compression, adjust as needed
-            rope_seq_len=2048
+        self.norm1 = nn.RMSNorm(config.embedding_dim)
+        self.norm2 = nn.RMSNorm(config.embedding_dim)
+        kv_compression_dim = int(
+            config.embedding_dim * config.kv_compression_ratio)
+        q_compression_dim = int(
+            config.embedding_dim * config.q_compression_ratio
         )
-        self.mlp = SwiGLU(config.dim, int(config.dim * mlp_ratio))
+        self.attn = MLA(
+            embedding_dim=config.embedding_dim,
+            num_attention_heads=config.num_attention_heads,
+            kv_compression_dim=kv_compression_dim,
+            q_compression_dim=q_compression_dim,
+            rope_seq_len=config.rope_seq_len
+        )
+        self.mlp = SwiGLU(
+            config.embedding_dim,
+            config.embedding_dim * config.mlp_ratio
+        )
 
     def forward(self, x, mask=None, past_kv_latent=None, return_kv_cache=False):
         """
@@ -54,25 +64,28 @@ class TransformerBlock(nn.Module):
     """
     Standard transformer block with MultiHeadAttention and SwiGLU feedforward.
     """
-    def __init__(self, config: ModelConfig, mlp_ratio=4):
+
+    def __init__(self, config: ModelConfig):
         super().__init__()
-        head_dim = config.dim // config.num_heads
+        head_dim = config.embedding_dim // config.num_attention_heads
 
         # Create projection layers for attention
-        q_proj = nn.Linear(config.dim, config.dim, bias=False)
+        q_proj = nn.Linear(
+            config.embedding_dim, config.embedding_dim, bias=False)
         k_proj = nn.Linear(
-            config.dim, head_dim * config.num_kv_heads, bias=False)
+            config.embedding_dim, head_dim * config.num_kv_heads, bias=False)
         v_proj = nn.Linear(
-            config.dim, head_dim * config.num_kv_heads, bias=False)
-        out_proj = nn.Linear(config.dim, config.dim, bias=False)
+            config.embedding_dim, head_dim * config.num_kv_heads, bias=False)
+        out_proj = nn.Linear(
+            config.embedding_dim, config.embedding_dim, bias=False)
 
         # Create rotary embeddings
         pos_embeddings = RotaryPositionalEmbeddings(head_dim)
 
         # Initialize MultiHeadAttention with all required components
         self.attn = MultiHeadAttention(
-            embed_dim=config.dim,
-            num_heads=config.num_heads,
+            embed_dim=config.embedding_dim,
+            num_heads=config.num_attention_heads,
             num_kv_heads=config.num_kv_heads,
             head_dim=head_dim,
             q_proj=q_proj,
@@ -85,9 +98,12 @@ class TransformerBlock(nn.Module):
             is_causal=True,
         )
 
-        self.norm1 = nn.RMSNorm(config.dim)
-        self.norm2 = nn.RMSNorm(config.dim)
-        self.mlp = SwiGLU(config.dim, int(config.dim * mlp_ratio))
+        self.norm1 = nn.RMSNorm(config.embedding_dim)
+        self.norm2 = nn.RMSNorm(config.embedding_dim)
+        self.mlp = SwiGLU(
+            config.embedding_dim,
+            config.embedding_dim * config.mlp_ratio
+        )
         self.checkpointing = config.checkpointing
 
     def forward(self, x):

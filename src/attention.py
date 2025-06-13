@@ -9,47 +9,62 @@ class MLA(nn.Module):
     Multi-Latent Attention (MLA) module with compressed key, value, and query projections,
     rotary positional embeddings, and decoupled RoPE components for keys and queries.
     """
+
     def __init__(
         self,
-        dim: int,
-        num_heads: int,
+        embedding_dim: int,
+        num_attention_heads: int,
         kv_compression_dim: int,
         q_compression_dim: int,
         rope_seq_len: int,
     ):
+        """
+        Initialize the MLA module.
+
+        Args:
+            embedding_dim (int): Dimension of the input and output embeddings.
+            num_attention_heads (int): Number of attention heads.
+            kv_compression_dim (int): Dimension of the compressed key and value projections.
+            q_compression_dim (int): Dimension of the compressed query projection.
+            rope_seq_len (int): Sequence length for rotary positional embeddings.
+        """
         super().__init__()
-        self.dim = dim
-        self.num_heads = num_heads
-        self.head_dim = dim // num_heads
+        self.embedding_dim = embedding_dim
+        self.num_attention_heads = num_attention_heads
+        self.head_dim = embedding_dim // num_attention_heads
         self.rope = RotaryPositionalEmbeddings(
             dim=self.head_dim, base=10000, max_seq_len=rope_seq_len)
 
         # Projections for compressed KV
-        self.kv_down = nn.Linear(dim, kv_compression_dim, bias=False)  # W_D_KV
+        self.kv_down = nn.Linear(
+            embedding_dim, kv_compression_dim, bias=False)  # W_D_KV
         self.kv_up_k = nn.Linear(
-            kv_compression_dim, num_heads * self.head_dim, bias=False)  # W_U_K
+            kv_compression_dim, num_attention_heads * self.head_dim, bias=False)  # W_U_K
         self.kv_up_v = nn.Linear(
-            kv_compression_dim, num_heads * self.head_dim, bias=False)  # W_U_V
+            kv_compression_dim, num_attention_heads * self.head_dim, bias=False)  # W_U_V
 
         # Projections for compressed Q
-        self.q_down = nn.Linear(dim, q_compression_dim, bias=False)  # W_D_Q
-        self.q_up = nn.Linear(q_compression_dim, num_heads *
+        self.q_down = nn.Linear(
+            embedding_dim, q_compression_dim, bias=False)  # W_D_Q
+        self.q_up = nn.Linear(q_compression_dim, num_attention_heads *
                               self.head_dim, bias=False)  # W_U_Q
 
         # Linear for the decoupled RoPE component
-        self.k_rope_proj = nn.Linear(dim, self.head_dim, bias=False)   # W_K_R
-        self.q_rope_proj = nn.Linear(dim, self.head_dim, bias=False)   # W_Q_R
+        self.k_rope_proj = nn.Linear(
+            embedding_dim, self.head_dim, bias=False)   # W_K_R
+        self.q_rope_proj = nn.Linear(
+            embedding_dim, self.head_dim, bias=False)   # W_Q_R
 
         # Output projection
         self.out_proj = nn.Linear(
-            num_heads * self.head_dim, dim, bias=False)  # W_O
+            num_attention_heads * self.head_dim, embedding_dim, bias=False)  # W_O
 
     def forward(self, x, mask=None, past_kv_latent=None, return_kv_cache=False):
         """
         Forward pass for the MLA attention module.
 
         Args:
-            x (torch.Tensor): Input tensor of shape (batch, seq_len, dim).
+            x (torch.Tensor): Input tensor of shape (batch, seq_len, embedding_dim).
             mask (torch.Tensor, optional): Attention mask of shape (batch, seq_len) or None.
             past_kv_latent (torch.Tensor, optional): Cached tensor from previous steps, shape (batch, T_past, kv_compression_dim).
             return_kv_cache (bool): If True, returns updated key/value cache.
@@ -68,8 +83,10 @@ class MLA(nn.Module):
 
         k_c = self.kv_up_k(kv_latent)  # (b, T_total, n_h * h_d)
         v_c = self.kv_up_v(kv_latent)  # (b, T_total, n_h * h_d)
-        k_c = k_c.view(bsz, kv_latent.size(1), self.num_heads, self.head_dim)
-        v_c = v_c.view(bsz, kv_latent.size(1), self.num_heads, self.head_dim)
+        k_c = k_c.view(
+            bsz, kv_latent.size(1), self.num_attention_heads, self.head_dim)
+        v_c = v_c.view(
+            bsz, kv_latent.size(1), self.num_attention_heads, self.head_dim)
 
         # RoPE component for keys
         # For RoPE, we only need to apply to the current step, but for simplicity, apply to all
@@ -80,7 +97,7 @@ class MLA(nn.Module):
             zeros = torch.zeros(bsz, kv_latent.size(
                 1) - seq_len, self.head_dim, device=x.device, dtype=x.dtype)
             k_r = torch.cat([zeros, k_r], dim=1)
-        k_r = k_r.unsqueeze(2).expand(-1, -1, self.num_heads, -1)
+        k_r = k_r.unsqueeze(2).expand(-1, -1, self.num_attention_heads, -1)
         k_r = self.rope(k_r)
 
         # final key: concat compressed + rope
@@ -89,9 +106,9 @@ class MLA(nn.Module):
         # --- Queries ---
         q_latent = self.q_down(x)
         q_c = self.q_up(q_latent)
-        q_c = q_c.view(bsz, seq_len, self.num_heads, self.head_dim)
+        q_c = q_c.view(bsz, seq_len, self.num_attention_heads, self.head_dim)
         q_r = self.q_rope_proj(x)
-        q_r = q_r.unsqueeze(2).expand(-1, -1, self.num_heads, -1)
+        q_r = q_r.unsqueeze(2).expand(-1, -1, self.num_attention_heads, -1)
         q_r = self.rope(q_r)
         q = torch.cat([q_c, q_r], dim=-1)
 
@@ -108,7 +125,7 @@ class MLA(nn.Module):
 
         attn_output = attn_output.permute(0, 2, 1, 3).contiguous()
         attn_output = attn_output.view(
-            bsz, attn_output.size(1), self.num_heads * self.head_dim)
+            bsz, attn_output.size(1), self.num_attention_heads * self.head_dim)
 
         out = self.out_proj(attn_output)
 
