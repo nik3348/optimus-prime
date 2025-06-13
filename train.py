@@ -5,12 +5,12 @@ from torch.utils.data import DataLoader
 from torch.optim import AdamW
 from torch.utils.tensorboard import SummaryWriter
 
-from datasets import load_dataset
-from transformers import AutoTokenizer
-from model import Transformer
 from tqdm import tqdm
 from pathlib import Path
+from model import Transformer
 from config import ModelConfig, TrainingConfig
+from datasets import load_dataset
+from transformers import AutoTokenizer
 
 
 # Constants

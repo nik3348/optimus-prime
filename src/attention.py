@@ -130,6 +130,6 @@ class MLA(nn.Module):
         out = self.out_proj(attn_output)
 
         if return_kv_cache:
-            return out, k_c, k_r, v_c
+            return out, kv_latent[:, -1:, :]
         else:
             return out

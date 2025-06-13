@@ -43,7 +43,7 @@ def generate_text(
     device: torch.device = torch.device(
         'cuda' if torch.cuda.is_available() else 'cpu')
 ) -> str:
-    """Generate text from the model given a prompt.
+    """Generate text from the model given a prompt, using KV caching for efficient decoding.
 
     Args:
         model: The loaded model
@@ -61,12 +61,24 @@ def generate_text(
     inputs = tokenizer(prompt, return_tensors="pt").to(device)
     input_ids = inputs["input_ids"]
 
-    # Generate
+    past_kv_latents = None
+    generated = input_ids
     with torch.no_grad():
         with torch.autocast(device_type='cuda', dtype=torch.float16):
             for _ in range(max_length):
-                # Get model predictions
-                logits = model(input_ids)
+                # Pass None for past_kv_latents on first step, then list of tensors for subsequent steps
+                if past_kv_latents is None:
+                    logits, new_kv_latents = model(
+                        generated,
+                        past_kv_latents=None,
+                        return_kv_cache=True
+                    )
+                else:
+                    logits, new_kv_latents = model(
+                        generated[:, -1:],
+                        past_kv_latents=past_kv_latents,
+                        return_kv_cache=True
+                    )
                 next_token_logits = logits[:, -1, :] / temperature
 
                 # Apply top-p sampling
@@ -85,14 +97,17 @@ def generate_text(
 
                 # Sample next token
                 next_token = torch.multinomial(probs, num_samples=1)
-                input_ids = torch.cat([input_ids, next_token], dim=1)
+                generated = torch.cat([generated, next_token], dim=1)
+
+                # Update KV cache for next step
+                past_kv_latents = new_kv_latents
 
                 # Stop if we generate an EOS token
                 if next_token.item() == tokenizer.eos_token_id:
                     break
 
     # Decode and return the generated text
-    generated_text = tokenizer.decode(input_ids[0], skip_special_tokens=True)
+    generated_text = tokenizer.decode(generated[0], skip_special_tokens=True)
     return generated_text
 
 

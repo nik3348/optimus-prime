@@ -33,7 +33,7 @@ class MLATransformerBlock(nn.Module):
             config.embedding_dim * config.mlp_ratio
         )
 
-    def forward(self, x, mask=None, past_kv_latent=None, return_kv_cache=False):
+    def forward(self, x, mask=None, past_kv_latent=None, return_kv_cache=False, return_raw_kv_cache=False):
         """
         Forward pass for the MLA-based transformer block.
 
@@ -42,20 +42,20 @@ class MLATransformerBlock(nn.Module):
             mask (torch.Tensor, optional): Attention mask.
             past_kv_latent (torch.Tensor, optional): Cached latent for KV.
             return_kv_cache (bool): Whether to return KV cache.
+            return_raw_kv_cache (bool): Whether to return the raw compressed kv_latent for caching.
 
         Returns:
             torch.Tensor: Output tensor.
             (optionally) tuple: Output and KV cache if return_kv_cache is True.
         """
         normed_x = self.norm1(x)
-        attn_out = self.attn(
-            normed_x, mask=mask, past_kv_latent=past_kv_latent, return_kv_cache=return_kv_cache)
-        if return_kv_cache:
-            attn_out, new_kv_latent = attn_out[0], attn_out[1]
+        attn_out, kv_latent = self.attn(
+            normed_x, mask=mask, past_kv_latent=past_kv_latent, return_kv_cache=True)
         x = x + attn_out
         x = x + self.mlp(self.norm2(x))
         if return_kv_cache:
-            return x, new_kv_latent
+            # Always return the raw kv_latent (compressed, [B, 1, kv_compression_dim])
+            return x, kv_latent[:, -1:, :]
         else:
             return x
 
