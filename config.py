@@ -29,5 +29,5 @@ class TrainingConfig:
     num_workers: int = 4
 
     # Paths
-    checkpoint_dir: str = "checkpoints"
-    tensorboard_dir: str = "runs"
+    checkpoint_dir: str = "data/checkpoints"
+    tensorboard_dir: str = "data/runs"

@@ -266,7 +266,9 @@ def load_checkpoint(
     print(f"Loading checkpoint from {checkpoint_path}")
     try:
         # Load to CPU first to avoid device issues
-        checkpoint = torch.load(checkpoint_path, map_location='cpu')
+        checkpoint = torch.load(
+            checkpoint_path, map_location='cpu', weights_only=False
+        )
     except Exception as e:
         print(f"Error loading checkpoint: {str(e)}")
         print("Could not load checkpoint. Starting from scratch.")
