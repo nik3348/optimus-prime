@@ -16,7 +16,7 @@ class MLATransformerBlock(nn.Module):
         super().__init__()
         self.norm1 = nn.RMSNorm(config.embedding_dim)
         self.norm2 = nn.RMSNorm(config.embedding_dim)
-        dim_compress = int(config.embedding_dim * config.kv_compression_ratio)
+        dim_compress = int(config.embedding_dim * config.compression_ratio)
         self.attn = MLA(
             nhead=config.num_attention_heads,
             dim_embed=config.embedding_dim,

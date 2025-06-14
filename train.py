@@ -134,16 +134,18 @@ def train_epoch(
 
         # Log batch-level training loss, learning rate, and update progress bar
         global_step = epoch * num_batches + batch_idx
-        writer.add_scalar('train/loss_batch', current_loss, global_step)
-        writer.add_scalar(
-            'train/lr', optimizer.param_groups[0]['lr'], global_step)
+        writer.add_scalar('train/lr',
+                          optimizer.param_groups[0]['lr'], global_step)
+        writer.add_scalar('train/loss_batch',
+                          current_loss, global_step)
+        writer.add_scalar('train/perplexity_batch',
+                          math.exp(current_loss), global_step)
+
         progress_bar.set_postfix(
             loss=f"{current_loss:.4f}", avg_loss=f"{total_loss/(batch_idx+1):.4f}")
 
     avg_train_loss = total_loss / num_batches
     writer.add_scalar('train/loss_epoch', avg_train_loss, epoch)
-    writer.add_scalar('train/perplexity_epoch',
-                      math.exp(avg_train_loss), epoch)
     return avg_train_loss
 
 
@@ -193,13 +195,19 @@ def validate(
                     shift_labels.view(-1),
                     ignore_index=IGNORE_INDEX
                 )
-                total_loss += loss.item()
+                current_loss = loss.item()
+                total_loss += current_loss
                 progress_bar.set_postfix(
-                    loss=f"{loss.item():.4f}", avg_loss=f"{total_loss/(batch_idx+1):.4f}")
+                    loss=f"{current_loss:.4f}", avg_loss=f"{total_loss/(batch_idx+1):.4f}")
+
+            global_step = epoch * num_batches + batch_idx
+            writer.add_scalar('val/loss_batch',
+                              current_loss, global_step)
+            writer.add_scalar('val/perplexity_batch',
+                              math.exp(current_loss), global_step)
 
     avg_val_loss = total_loss / num_batches
     writer.add_scalar('val/loss_epoch', avg_val_loss, epoch)
-    writer.add_scalar('val/perplexity_epoch', math.exp(avg_val_loss), epoch)
 
     return avg_val_loss
 
@@ -334,8 +342,7 @@ def main():
     print(f"  Embedding Dimension: {model_config.embedding_dim}")
     print(f"  Number of Layers: {model_config.num_layers}")
     print(f"  Number of Attention Heads: {model_config.num_attention_heads}")
-    print(f"  KV Compression Ratio: {model_config.kv_compression_ratio}")
-    print(f"  Q Compression Ratio: {model_config.q_compression_ratio}")
+    print(f"  Compression Ratio: {model_config.compression_ratio}")
     print("-------------------------")
 
     # Load tokenizer
@@ -462,12 +469,10 @@ def main():
         )
 
         print(f"Epoch {epoch + 1} Average Training Loss: {train_loss:.4f}")
-        writer.add_scalar('train/loss_epoch', train_loss, epoch)
 
         # Validate
         val_loss = validate(model, val_dataloader, device, writer, epoch)
         print(f"Epoch {epoch + 1} Average Validation Loss: {val_loss:.4f}")
-        writer.add_scalar('val/loss_epoch', val_loss, epoch)
 
         # Save checkpoint
         is_best = val_loss < best_val_loss
