@@ -1,6 +1,7 @@
 import math
 import torch
 
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.optim import AdamW
 from torch.utils.tensorboard import SummaryWriter
@@ -34,11 +35,13 @@ def create_dataloader(dataset, tokenizer, config: TrainingConfig) -> DataLoader:
             # Combine instruction, context, and response
             texts = []
             for item in batch:
-                text = f"Instruction: {item['instruction']}\n"
-                if item['context']:
-                    text += f"Context: {item['context']}\n"
-                text += f"Response: {item['response']}"
-                texts.append(text)
+                # text = f"Instruction: {item['instruction']}\n"
+                # if item['context']:
+                #     text += f"Context: {item['context']}\n"
+                # text += f"Response: {item['response']}"
+                # texts.append(text)
+                texts.append(
+                    f"{item['instruction']} {item['context']} {item['response']}")
 
             encodings = tokenizer(
                 texts,
@@ -109,10 +112,10 @@ def train_epoch(
         optimizer.zero_grad()
 
         with torch.autocast(device_type='cuda', dtype=torch.float16):
-            logits = model(input_ids)
+            logits, _, _ = model(input_ids)
             shift_logits = logits[..., :-1, :].contiguous()
             shift_labels = labels[..., 1:].contiguous()
-            loss = torch.nn.functional.cross_entropy(
+            loss = F.cross_entropy(
                 shift_logits.view(-1, shift_logits.size(-1)),
                 shift_labels.view(-1),
                 ignore_index=IGNORE_INDEX
@@ -131,14 +134,16 @@ def train_epoch(
 
         # Log batch-level training loss, learning rate, and update progress bar
         global_step = epoch * num_batches + batch_idx
-        writer.add_scalar('Loss/train_batch', current_loss, global_step)
+        writer.add_scalar('train/loss_batch', current_loss, global_step)
         writer.add_scalar(
-            'Learning_rate', optimizer.param_groups[0]['lr'], global_step)
+            'train/lr', optimizer.param_groups[0]['lr'], global_step)
         progress_bar.set_postfix(
             loss=f"{current_loss:.4f}", avg_loss=f"{total_loss/(batch_idx+1):.4f}")
 
     avg_train_loss = total_loss / num_batches
-    writer.add_scalar('Loss/train_epoch_avg', avg_train_loss, epoch)
+    writer.add_scalar('train/loss_epoch', avg_train_loss, epoch)
+    writer.add_scalar('train/perplexity_epoch',
+                      math.exp(avg_train_loss), epoch)
     return avg_train_loss
 
 
@@ -172,27 +177,30 @@ def validate(
             input_ids = batch['input_ids'].to(device)
             labels = batch['labels'].to(device)
 
+            # Initialize caches for the sequence
+            kv_caches = [None] * len(model.layers)
+            kr_caches = [None] * len(model.layers)
+
             with torch.autocast(device_type='cuda', dtype=torch.float16):
-                logits = model(input_ids)
+                logits, kv_caches, kr_caches = model(
+                    input_ids, kv_caches=kv_caches, kr_caches=kr_caches)
+
+                # Only compute loss on the last chunk
                 shift_logits = logits[..., :-1, :].contiguous()
                 shift_labels = labels[..., 1:].contiguous()
-                loss = torch.nn.functional.cross_entropy(
+                loss = F.cross_entropy(
                     shift_logits.view(-1, shift_logits.size(-1)),
                     shift_labels.view(-1),
                     ignore_index=IGNORE_INDEX
                 )
-
-            current_loss = loss.item()
-            total_loss += current_loss
-
-            # Log batch-level validation loss and update progress bar
-            global_step = epoch * num_batches + batch_idx
-            writer.add_scalar('Loss/val_batch', current_loss, global_step)
-            progress_bar.set_postfix(
-                loss=f"{current_loss:.4f}", avg_loss=f"{total_loss/(batch_idx+1):.4f}")
+                total_loss += loss.item()
+                progress_bar.set_postfix(
+                    loss=f"{loss.item():.4f}", avg_loss=f"{total_loss/(batch_idx+1):.4f}")
 
     avg_val_loss = total_loss / num_batches
-    writer.add_scalar('Loss/val_epoch_avg', avg_val_loss, epoch)
+    writer.add_scalar('val/loss_epoch', avg_val_loss, epoch)
+    writer.add_scalar('val/perplexity_epoch', math.exp(avg_val_loss), epoch)
+
     return avg_val_loss
 
 
@@ -304,7 +312,8 @@ def main():
     print(f"Using device: {device}")
 
     # Initialize tensorboard
-    writer = SummaryWriter(training_config.tensorboard_dir)
+    writer = SummaryWriter(training_config.tensorboard_dir +
+                           f"/{model_config.embedding_dim}-{model_config.num_layers}-{model_config.num_attention_heads}")
     print(
         f"TensorBoard logs will be saved to: {training_config.tensorboard_dir}")
 
@@ -322,6 +331,11 @@ def main():
     print(f"Total trainable parameters: {total_params:,}")
     print("Model Configuration:")
     print(f"  Vocabulary Size: {model_config.vocab_size}")
+    print(f"  Embedding Dimension: {model_config.embedding_dim}")
+    print(f"  Number of Layers: {model_config.num_layers}")
+    print(f"  Number of Attention Heads: {model_config.num_attention_heads}")
+    print(f"  KV Compression Ratio: {model_config.kv_compression_ratio}")
+    print(f"  Q Compression Ratio: {model_config.q_compression_ratio}")
     print("-------------------------")
 
     # Load tokenizer
@@ -448,12 +462,12 @@ def main():
         )
 
         print(f"Epoch {epoch + 1} Average Training Loss: {train_loss:.4f}")
-        writer.add_scalar('Loss/epoch_avg_train', train_loss, epoch)
+        writer.add_scalar('train/loss_epoch', train_loss, epoch)
 
         # Validate
         val_loss = validate(model, val_dataloader, device, writer, epoch)
         print(f"Epoch {epoch + 1} Average Validation Loss: {val_loss:.4f}")
-        writer.add_scalar('Loss/epoch_avg_val', val_loss, epoch)
+        writer.add_scalar('val/loss_epoch', val_loss, epoch)
 
         # Save checkpoint
         is_best = val_loss < best_val_loss

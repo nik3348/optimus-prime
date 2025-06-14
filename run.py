@@ -43,7 +43,7 @@ def generate_text(
     device: torch.device = torch.device(
         'cuda' if torch.cuda.is_available() else 'cpu')
 ) -> str:
-    """Generate text from the model given a prompt, using KV caching for efficient decoding.
+    """Generate text from the model given a prompt, using KV and KR caching for efficient decoding.
 
     Args:
         model: The loaded model
@@ -61,24 +61,24 @@ def generate_text(
     inputs = tokenizer(prompt, return_tensors="pt").to(device)
     input_ids = inputs["input_ids"]
 
-    past_kv_latents = None
+    # Initialize caches
+    kv_caches = None
+    kr_caches = None
     generated = input_ids
+
     with torch.no_grad():
         with torch.autocast(device_type='cuda', dtype=torch.float16):
             for _ in range(max_length):
-                # Pass None for past_kv_latents on first step, then list of tensors for subsequent steps
-                if past_kv_latents is None:
-                    logits, new_kv_latents = model(
-                        generated,
-                        past_kv_latents=None,
-                        return_kv_cache=True
-                    )
+                # Pass None for caches on first step, then use cached values for subsequent steps
+                if kv_caches is None:
+                    logits, kv_caches, kr_caches = model(generated)
                 else:
-                    logits, new_kv_latents = model(
+                    logits, kv_caches, kr_caches = model(
                         generated[:, -1:],
-                        past_kv_latents=past_kv_latents,
-                        return_kv_cache=True
+                        kv_caches=kv_caches,
+                        kr_caches=kr_caches
                     )
+
                 next_token_logits = logits[:, -1, :] / temperature
 
                 # Apply top-p sampling
@@ -98,9 +98,6 @@ def generate_text(
                 # Sample next token
                 next_token = torch.multinomial(probs, num_samples=1)
                 generated = torch.cat([generated, next_token], dim=1)
-
-                # Update KV cache for next step
-                past_kv_latents = new_kv_latents
 
                 # Stop if we generate an EOS token
                 if next_token.item() == tokenizer.eos_token_id:
@@ -143,6 +140,23 @@ def main():
             if not prompt:
                 print("Please enter a non-empty prompt.")
                 continue
+
+            # # Get user input for instruction
+            # instruction = input("\nEnter instruction: ").strip()
+            # if instruction.lower() == 'quit':
+            #     break
+            # if not instruction:
+            #     print("Please enter a non-empty instruction.")
+            #     continue
+
+            # # Get user input for context (optional)
+            # context = input("Enter context (optional, press Enter to skip): ").strip()
+
+            # # Construct prompt in the same format as training
+            # prompt = f"Instruction: {instruction}\n"
+            # if context:
+            #     prompt += f"Context: {context}\n"
+            # prompt += "Response: "
 
             # Generate text
             generated_text = generate_text(

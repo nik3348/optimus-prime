@@ -22,7 +22,7 @@ class TrainingConfig:
     # Training parameters
     batch_size: int = 8
     max_length: int = 512
-    learning_rate: float = 1e-4
+    learning_rate: float = 1e-3
     weight_decay: float = 0.01
     num_epochs: int = 5
     train_val_split: float = 0.9

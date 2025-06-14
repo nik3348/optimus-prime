@@ -16,48 +16,38 @@ class MLATransformerBlock(nn.Module):
         super().__init__()
         self.norm1 = nn.RMSNorm(config.embedding_dim)
         self.norm2 = nn.RMSNorm(config.embedding_dim)
-        kv_compression_dim = int(
-            config.embedding_dim * config.kv_compression_ratio)
-        q_compression_dim = int(
-            config.embedding_dim * config.q_compression_ratio
-        )
+        dim_compress = int(config.embedding_dim * config.kv_compression_ratio)
         self.attn = MLA(
-            embedding_dim=config.embedding_dim,
-            num_attention_heads=config.num_attention_heads,
-            kv_compression_dim=kv_compression_dim,
-            q_compression_dim=q_compression_dim,
-            rope_seq_len=config.rope_seq_len
+            nhead=config.num_attention_heads,
+            dim_embed=config.embedding_dim,
+            dim_compress=dim_compress,
+            max_seq_len=config.rope_seq_len
         )
         self.mlp = SwiGLU(
             config.embedding_dim,
             config.embedding_dim * config.mlp_ratio
         )
 
-    def forward(self, x, mask=None, past_kv_latent=None, return_kv_cache=False, return_raw_kv_cache=False):
+    def forward(self, x, kv_cache=None, kr_cache=None):
         """
         Forward pass for the MLA-based transformer block.
 
         Args:
             x (torch.Tensor): Input tensor of shape (batch, seq_len, dim).
-            mask (torch.Tensor, optional): Attention mask.
-            past_kv_latent (torch.Tensor, optional): Cached latent for KV.
-            return_kv_cache (bool): Whether to return KV cache.
-            return_raw_kv_cache (bool): Whether to return the raw compressed kv_latent for caching.
+            kv_cache (torch.Tensor, optional): Cached key-value tensors.
+            kr_cache (torch.Tensor, optional): Cached key-rotation tensors.
 
         Returns:
             torch.Tensor: Output tensor.
-            (optionally) tuple: Output and KV cache if return_kv_cache is True.
+            torch.Tensor: Updated KV cache.
+            torch.Tensor: Updated KR cache.
         """
         normed_x = self.norm1(x)
-        attn_out, kv_latent = self.attn(
-            normed_x, mask=mask, past_kv_latent=past_kv_latent, return_kv_cache=True)
+        attn_out, kv_cache, kr_cache = self.attn(
+            normed_x, kv_cache=kv_cache, kr_cache=kr_cache)
         x = x + attn_out
         x = x + self.mlp(self.norm2(x))
-        if return_kv_cache:
-            # Always return the raw kv_latent (compressed, [B, 1, kv_compression_dim])
-            return x, kv_latent[:, -1:, :]
-        else:
-            return x
+        return x, kv_cache, kr_cache
 
 
 class TransformerBlock(nn.Module):

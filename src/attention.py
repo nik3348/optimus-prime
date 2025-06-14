@@ -5,131 +5,99 @@ from torchtune.modules import RotaryPositionalEmbeddings
 
 
 class MLA(nn.Module):
-    """
-    Multi-Latent Attention (MLA) module with compressed key, value, and query projections,
-    rotary positional embeddings, and decoupled RoPE components for keys and queries.
-    """
-
-    def __init__(
-        self,
-        embedding_dim: int,
-        num_attention_heads: int,
-        kv_compression_dim: int,
-        q_compression_dim: int,
-        rope_seq_len: int,
-    ):
-        """
-        Initialize the MLA module.
-
-        Args:
-            embedding_dim (int): Dimension of the input and output embeddings.
-            num_attention_heads (int): Number of attention heads.
-            kv_compression_dim (int): Dimension of the compressed key and value projections.
-            q_compression_dim (int): Dimension of the compressed query projection.
-            rope_seq_len (int): Sequence length for rotary positional embeddings.
-        """
+    def __init__(self, nhead, dim_embed, dim_compress, max_seq_len):
         super().__init__()
-        self.embedding_dim = embedding_dim
-        self.num_attention_heads = num_attention_heads
-        self.head_dim = embedding_dim // num_attention_heads
+        self.nhead = nhead
+        self.dim_head = dim_embed // nhead
+        self.max_seq_len = max_seq_len
+        self.dim_compress = dim_compress
+
+        # Layer norms
+        self.norm1 = nn.RMSNorm(dim_compress)
+        self.norm2 = nn.RMSNorm(dim_compress)
+        self.norm3 = nn.RMSNorm(dim_embed)
+
+        # Linear projections
+        self.w_d_kv = nn.Linear(dim_embed, dim_compress, bias=False)
+        self.w_u_k = nn.Linear(dim_compress, dim_embed, bias=False)
+        self.w_u_v = nn.Linear(dim_compress, dim_embed, bias=False)
+
+        self.w_d_q = nn.Linear(dim_embed, dim_compress, bias=False)
+        self.w_u_q = nn.Linear(dim_compress, dim_embed, bias=False)
+
+        # RoPE projections
+        self.w_kr = nn.Linear(dim_embed, dim_embed, bias=False)
+        self.w_qr = nn.Linear(dim_compress, dim_embed, bias=False)
+
+        # Initialize RoPE with half the dimension since it's applied to pairs of dimensions
         self.rope = RotaryPositionalEmbeddings(
-            dim=self.head_dim, base=10000, max_seq_len=rope_seq_len)
+            dim=self.dim_head, max_seq_len=max_seq_len)
 
-        # Projections for compressed KV
-        self.kv_down = nn.Linear(
-            embedding_dim, kv_compression_dim, bias=False)  # W_D_KV
-        self.kv_up_k = nn.Linear(
-            kv_compression_dim, num_attention_heads * self.head_dim, bias=False)  # W_U_K
-        self.kv_up_v = nn.Linear(
-            kv_compression_dim, num_attention_heads * self.head_dim, bias=False)  # W_U_V
+        self.w_o = nn.Linear(dim_embed, dim_embed, bias=False)
 
-        # Projections for compressed Q
-        self.q_down = nn.Linear(
-            embedding_dim, q_compression_dim, bias=False)  # W_D_Q
-        self.q_up = nn.Linear(q_compression_dim, num_attention_heads *
-                              self.head_dim, bias=False)  # W_U_Q
+    def forward(self, h, kv_cache=None, kr_cache=None):
+        B, S, _ = h.shape
 
-        # Linear for the decoupled RoPE component
-        self.k_rope_proj = nn.Linear(
-            embedding_dim, self.head_dim, bias=False)   # W_K_R
-        self.q_rope_proj = nn.Linear(
-            embedding_dim, self.head_dim, bias=False)   # W_Q_R
+        # Project input to query and key-value spaces
+        cq = self.w_d_q(h)
+        ckv = self.w_d_kv(h)
 
-        # Output projection
-        self.out_proj = nn.Linear(
-            num_attention_heads * self.head_dim, embedding_dim, bias=False)  # W_O
+        # Layer Norm
+        cq = self.norm1(cq)
+        ckv = self.norm2(ckv)
 
-    def forward(self, x, mask=None, past_kv_latent=None, return_kv_cache=False):
-        """
-        Forward pass for the MLA attention module.
+        # Prepare RoPE inputs
+        qr = self.w_qr(cq)
+        kr = self.w_kr(h)
 
-        Args:
-            x (torch.Tensor): Input tensor of shape (batch, seq_len, embedding_dim).
-            mask (torch.Tensor, optional): Attention mask of shape (batch, seq_len) or None.
-            past_kv_latent (torch.Tensor, optional): Cached tensor from previous steps, shape (batch, T_past, kv_compression_dim).
-            return_kv_cache (bool): If True, returns updated key/value cache.
+        # Reshape for RoPE application to match expected format [b, s, n_h, h_d]
+        qr = qr.view(B, S, self.nhead, self.dim_head)
+        kr = kr.view(B, S, self.nhead, self.dim_head)
 
-        Returns:
-            torch.Tensor: Output tensor after attention.
-            (optionally) tuple: Updated key/value cache if return_kv_cache is True.
-        """
-        bsz, seq_len, _ = x.size()
+        # Apply RoPE - input and output shapes are the same [b, s, n_h, h_d]
+        qr = self.rope(qr).view(B, S, -1)
+        kr = self.rope(kr).view(B, S, -1)
 
-        # --- Keys & Values ---
-        kv_latent = self.kv_down(x)  # (b, T, d_c)
-        if past_kv_latent is not None:
-            # (b, T_total, d_c)
-            kv_latent = torch.cat([past_kv_latent, kv_latent], dim=1)
+        if self.training:
+            # Project to attention space
+            qc = self.w_u_q(cq)
+            kc = self.w_u_k(ckv)
+            v = self.w_u_v(ckv)
 
-        k_c = self.kv_up_k(kv_latent)  # (b, T_total, n_h * h_d)
-        v_c = self.kv_up_v(kv_latent)  # (b, T_total, n_h * h_d)
-        k_c = k_c.view(
-            bsz, kv_latent.size(1), self.num_attention_heads, self.head_dim)
-        v_c = v_c.view(
-            bsz, kv_latent.size(1), self.num_attention_heads, self.head_dim)
+            # Combine with RoPE
+            q = torch.cat([qc, qr], dim=-1)
+            k = torch.cat([kc, kr], dim=-1)
 
-        # RoPE component for keys
-        # For RoPE, we only need to apply to the current step, but for simplicity, apply to all
-        k_r = self.k_rope_proj(x)  # (b, T, h_d)
-        if past_kv_latent is not None:
-            # For cached steps, need their corresponding input x for RoPE. Assume user provides past_x if needed.
-            # For now, just repeat zeros for cached steps (could be improved if past_x is available)
-            zeros = torch.zeros(bsz, kv_latent.size(
-                1) - seq_len, self.head_dim, device=x.device, dtype=x.dtype)
-            k_r = torch.cat([zeros, k_r], dim=1)
-        k_r = k_r.unsqueeze(2).expand(-1, -1, self.num_attention_heads, -1)
-        k_r = self.rope(k_r)
+            # Compute attention
+            o = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+            u = self.w_o(o)
 
-        # final key: concat compressed + rope
-        k = torch.cat([k_c, k_r], dim=-1)
-
-        # --- Queries ---
-        q_latent = self.q_down(x)
-        q_c = self.q_up(q_latent)
-        q_c = q_c.view(bsz, seq_len, self.num_attention_heads, self.head_dim)
-        q_r = self.q_rope_proj(x)
-        q_r = q_r.unsqueeze(2).expand(-1, -1, self.num_attention_heads, -1)
-        q_r = self.rope(q_r)
-        q = torch.cat([q_c, q_r], dim=-1)
-
-        # --- Attention scores & output (using F.scaled_dot_product_attention) ---
-        q = q.permute(0, 2, 1, 3)
-        k = k.permute(0, 2, 1, 3)
-        v = v_c.permute(0, 2, 1, 3)
-
-        attn_output = F.scaled_dot_product_attention(
-            q, k, v,
-            attn_mask=None if mask is None else (mask[:, None, None, :]),
-            is_causal=False
-        )  # (b, n_h, T, h_d)
-
-        attn_output = attn_output.permute(0, 2, 1, 3).contiguous()
-        attn_output = attn_output.view(
-            bsz, attn_output.size(1), self.num_attention_heads * self.head_dim)
-
-        out = self.out_proj(attn_output)
-
-        if return_kv_cache:
-            return out, kv_latent[:, -1:, :]
         else:
-            return out
+            # Absorption for inference
+            absorbed_w_q = F.linear(self.w_d_q.weight.T, self.w_u_q.weight)
+            absorbed_w_q = F.linear(absorbed_w_q, self.w_u_k.weight.T)
+            absorbed_w_o = F.linear(self.w_u_v.weight.T, self.w_o.weight)
+
+            absorbed_q = F.linear(h, absorbed_w_q.T)
+
+            if kv_cache is not None:
+                ckv = torch.cat([kv_cache, ckv], dim=1)
+
+            if kr_cache is not None:
+                kr = torch.cat([kr_cache, kr], dim=1)
+
+            # Compute attention scores
+            attn_scores = torch.matmul(absorbed_q, ckv.transpose(-2, -1))
+            attn_scores_rope = torch.matmul(qr, kr.transpose(-2, -1))
+
+            # Combine scores and compute attention weights
+            attn_weights = torch.softmax(
+                (attn_scores + attn_scores_rope)/((self.nhead + self.dim_head) ** 0.5), dim=-1)
+
+            # Compute output
+            o = torch.matmul(attn_weights, ckv)
+            u = F.linear(o, absorbed_w_o.T)
+
+        # Post-attention norm
+        u = self.norm3(u)
+        return u, ckv, kr
