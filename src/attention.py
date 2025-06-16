@@ -9,7 +9,6 @@ class MLA(nn.Module):
         super().__init__()
         self.nhead = nhead
         self.dim_head = dim_embed // nhead
-        self.max_seq_len = max_seq_len
         self.dim_compress = dim_compress
 
         # Layer norms
@@ -34,6 +33,16 @@ class MLA(nn.Module):
             dim=self.dim_head, max_seq_len=max_seq_len)
 
         self.w_o = nn.Linear(dim_embed, dim_embed, bias=False)
+        
+        # Initialize absorbed weights as None
+        self.absorbed_w_q = None
+        self.absorbed_w_o = None
+
+    def compute_absorbed_weights(self):
+        """Compute and store the absorbed weights for inference."""
+        self.absorbed_w_q = F.linear(self.w_d_q.weight.T, self.w_u_q.weight)
+        self.absorbed_w_q = F.linear(self.absorbed_w_q, self.w_u_k.weight.T)
+        self.absorbed_w_o = F.linear(self.w_u_v.weight.T, self.w_o.weight)
 
     def forward(self, h, kv_cache=None, kr_cache=None):
         B, S, _ = h.shape
@@ -73,12 +82,11 @@ class MLA(nn.Module):
             u = self.w_o(o)
 
         else:
-            # Absorption for inference
-            absorbed_w_q = F.linear(self.w_d_q.weight.T, self.w_u_q.weight)
-            absorbed_w_q = F.linear(absorbed_w_q, self.w_u_k.weight.T)
-            absorbed_w_o = F.linear(self.w_u_v.weight.T, self.w_o.weight)
+            # Use pre-computed absorbed weights if available, otherwise compute them
+            if self.absorbed_w_q is None or self.absorbed_w_o is None:
+                self.compute_absorbed_weights()
 
-            absorbed_q = F.linear(h, absorbed_w_q.T)
+            absorbed_q = F.linear(h, self.absorbed_w_q.T)
 
             if kv_cache is not None:
                 ckv = torch.cat([kv_cache, ckv], dim=1)
@@ -96,7 +104,7 @@ class MLA(nn.Module):
 
             # Compute output
             o = torch.matmul(attn_weights, ckv)
-            u = F.linear(o, absorbed_w_o.T)
+            u = F.linear(o, self.absorbed_w_o.T)
 
         # Post-attention norm
         u = self.norm3(u)

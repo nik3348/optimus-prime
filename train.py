@@ -41,7 +41,7 @@ def create_dataloader(dataset, tokenizer, config: TrainingConfig) -> DataLoader:
                 # text += f"Response: {item['response']}"
                 # texts.append(text)
                 texts.append(
-                    f"{item['instruction']} {item['context']} {item['response']}")
+                    f"{item['text']}")
 
             encodings = tokenizer(
                 texts,
@@ -326,10 +326,7 @@ def main():
         f"TensorBoard logs will be saved to: {training_config.tensorboard_dir}")
 
     # Initialize model
-    model = Transformer(
-        config=model_config,
-        mlp_ratio=4,
-    ).to(device)
+    model = Transformer(config=model_config).to(device)
 
     # Print model parameters
     total_params = sum(p.numel()
@@ -359,6 +356,7 @@ def main():
     try:
         dataset = load_dataset(
             training_config.dataset_name,
+            '20231101.en',
             split="train",
             num_proc=training_config.num_workers
         )
@@ -381,7 +379,8 @@ def main():
 
     train_dataloader = create_dataloader(
         train_dataset, tokenizer, training_config)
-    val_dataloader = create_dataloader(val_dataset, tokenizer, training_config)
+    val_dataloader = create_dataloader(
+        val_dataset, tokenizer, training_config)
 
     print("\n--- Dataset Information ---")
     print(f"Total dataset size: {len(dataset)}")

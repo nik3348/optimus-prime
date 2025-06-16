@@ -4,9 +4,10 @@ from src.transformer import MLATransformerBlock
 
 
 class Transformer(nn.Module):
-    def __init__(self, config: ModelConfig, mlp_ratio=4):
+    def __init__(self, config: ModelConfig):
         super().__init__()
         self.embed = nn.Embedding(config.vocab_size, config.embedding_dim)
+        self.dropout = nn.Dropout(config.dropout)
         self.layers = nn.ModuleList([
             MLATransformerBlock(config) for _ in range(config.num_layers)
         ])
@@ -40,6 +41,8 @@ class Transformer(nn.Module):
             x = self.embed(input_ids[:, -1:])
         else:
             x = self.embed(input_ids)
+        
+        x = self.dropout(x)
 
         new_kv_caches = []
         new_kr_caches = []
@@ -58,5 +61,7 @@ class Transformer(nn.Module):
             new_kv_caches.append(kv_cache)
             new_kr_caches.append(kr_cache)
 
-        x = self.head(self.norm(x))
+        x = self.norm(x)
+        x = self.dropout(x)
+        x = self.head(x)
         return x, new_kv_caches, new_kr_caches

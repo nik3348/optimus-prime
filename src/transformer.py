@@ -27,6 +27,7 @@ class MLATransformerBlock(nn.Module):
             config.embedding_dim,
             config.embedding_dim * config.mlp_ratio
         )
+        self.dropout = nn.Dropout(config.dropout)
 
     def forward(self, x, kv_cache=None, kr_cache=None):
         """
@@ -45,8 +46,8 @@ class MLATransformerBlock(nn.Module):
         normed_x = self.norm1(x)
         attn_out, kv_cache, kr_cache = self.attn(
             normed_x, kv_cache=kv_cache, kr_cache=kr_cache)
-        x = x + attn_out
-        x = x + self.mlp(self.norm2(x))
+        x = x + self.dropout(attn_out)
+        x = x + self.dropout(self.mlp(self.norm2(x)))
         return x, kv_cache, kr_cache
 
 

@@ -1,10 +1,12 @@
 import torch.nn as nn
 import torch.nn.functional as F
 
+
 class SwiGLU(nn.Module):
     """
     SwiGLU feedforward block with two linear projections and a SiLU activation.
     """
+
     def __init__(self, dim, hidden_dim):
         """
         Args:
@@ -12,9 +14,9 @@ class SwiGLU(nn.Module):
             hidden_dim (int): Hidden layer dimension.
         """
         super().__init__()
-        self.w1 = nn.Linear(dim, hidden_dim)
-        self.w2 = nn.Linear(dim, hidden_dim)
-        self.w3 = nn.Linear(hidden_dim, dim)
+        self.w1 = nn.Linear(dim, hidden_dim, bias=False)
+        self.w2 = nn.Linear(dim, hidden_dim, bias=False)
+        self.w3 = nn.Linear(hidden_dim, dim, bias=False)
 
     def forward(self, x):
         """
