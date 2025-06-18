@@ -28,7 +28,7 @@ class MLA(nn.Module):
         self.w_kr = nn.Linear(dim_embed, dim_embed, bias=False)
         self.w_qr = nn.Linear(dim_compress, dim_embed, bias=False)
 
-        # Initialize RoPE with half the dimension since it's applied to pairs of dimensions
+        # Initialize RoPE
         self.rope = RotaryPositionalEmbeddings(
             dim=self.dim_head, max_seq_len=max_seq_len)
 

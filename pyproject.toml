@@ -2,12 +2,12 @@
 name = "optimus_prime"
 version = "0.1.0"
 description = ""
-authors = ["Nicholas Lai Jin Yung <nicklai88@live.com>"]
+authors = ["Nicholas Lai Jin Yung <nicklai.jy@gmail.com>"]
 readme = "README.md"
 package-mode = false
 
 [tool.poetry.dependencies]
-python = "^3.10"
+python = "^3.12"
 torch = "^2.7.1"
 datasets = "^3.6.0"
 tqdm = "^4.67.1"
