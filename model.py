@@ -41,7 +41,7 @@ class Transformer(nn.Module):
             x = self.embed(input_ids[:, -1:])
         else:
             x = self.embed(input_ids)
-        
+
         x = self.dropout(x)
 
         new_kv_caches = []
