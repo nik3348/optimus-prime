@@ -47,7 +47,9 @@ class MLATransformerBlock(nn.Module):
         attn_out, kv_cache, kr_cache = self.attn(
             normed_x, kv_cache=kv_cache, kr_cache=kr_cache)
         x = x + self.dropout(attn_out)
-        x = x + self.dropout(self.mlp(self.norm2(x)))
+
+        normed_x = self.norm2(x)
+        x = x + self.dropout(self.mlp(normed_x))
         return x, kv_cache, kr_cache
 
 

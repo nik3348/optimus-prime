@@ -1,6 +1,6 @@
 # Optimus Prime
 
-A modern, efficient transformer-based language model with several optimizations and best practices. The model features grouped query attention, rotary embeddings, and other architectural improvements for better performance and efficiency.
+A modern, efficient transformer-based language model with several optimizations and best practices. The model features Multi-head latent attention (MLA), rotary embeddings, and other architectural improvements for better performance and efficiency.
 
 ## Table of Contents
 
@@ -17,24 +17,25 @@ A modern, efficient transformer-based language model with several optimizations 
 
 ## Features
 
-- **Grouped Query Attention (GQA)**: Reduces memory usage while maintaining model quality by sharing key and value heads across multiple query heads
-- **Rotary Position Embeddings (RoPE)**: Better position encoding that improves model performance on longer sequences
-- **SwiGLU Activation**: Modern activation function that improves model performance
-- **RMSNorm**: Efficient normalization layer
-- **Gradient Checkpointing**: Memory-efficient training through gradient checkpointing
-- **Mixed Precision Training**: Automatic Mixed Precision (AMP) support for faster training
-- **Efficient KV Caching**: Optimized inference with KV caching
-- **Top-P (Nucleus) Sampling**: High-quality text generation with nucleus sampling
+- **Multi-head latent attention (MLA)**: A novel attention mechanism that uses low-rank projections and separate RoPE embeddings for queries and keys to improve performance.
+- **Rotary Position Embeddings (RoPE)**: Better position encoding that improves model performance on longer sequences.
+- **SwiGLU Activation**: Modern activation function that improves model performance.
+- **RMSNorm**: Efficient normalization layer.
+- **Gradient Checkpointing**: Memory-efficient training through gradient checkpointing.
+- **Mixed Precision Training**: Automatic Mixed Precision (AMP) support for faster training.
+- **Efficient KV Caching**: Optimized inference with KV and KR caching for the MLA module.
+- **Top-P (Nucleus) Sampling**: High-quality text generation with nucleus sampling.
 
 ## Model Architecture
 
 The model is based on a decoder-only transformer architecture with the following components:
 
-- Multi-head attention with grouped query attention
-- Rotary position embeddings
-- SwiGLU feed-forward networks
-- RMSNorm for normalization
-- Configurable model size and hyperparameters
+- **MLA Transformer Block**: Each block contains:
+    - **Multi-head latent attention (MLA)**: The core attention module.
+    - **SwiGLU Feed-Forward Network**: For non-linear transformations.
+    - **RMSNorm**: Applied before the attention and MLP layers.
+    - **Dropout**: For regularization.
+- The model can be configured to use either the `MLATransformerBlock` or a standard `TransformerBlock`.
 
 ## Installation
 
@@ -106,28 +107,32 @@ The model can be configured through the `ModelConfig` and `TrainingConfig` class
 @dataclass
 class ModelConfig:
     """Configuration for model architecture."""
-    vocab_size: int = 50257  # GPT-2 tokenizer vocabulary size
-    dim: int = 1024
-    depth: int = 8
-    num_heads: int = 8
+    vocab_size: int = 50257
+    embedding_dim: int = 768
+    num_layers: int = 8
+    num_attention_heads: int = 12
     num_kv_heads: int = 2
     checkpointing: bool = True
+    compression_ratio: float = 0.5
+    rope_seq_len: int = 2048
+    mlp_ratio: float = 4
+    dropout: float = 0.15
 
 @dataclass
 class TrainingConfig:
     """Configuration for model training."""
     # Training parameters
-    batch_size: int = 8
-    max_length: int = 512
-    learning_rate: float = 1e-4
+    batch_size: int = 64
+    max_length: int = 64
+    learning_rate: float = 1e-3
     weight_decay: float = 0.01
-    num_epochs: int = 5
+    num_epochs: int = 3
     train_val_split: float = 0.9
     gradient_clip_val: float = 1.0
 
     # Dataset parameters
-    dataset_name: str = "databricks/databricks-dolly-15k"
-    dataset_size: int = 1000
+    dataset_name: str = "wikimedia/wikipedia"
+    dataset_size: int = 200000
     num_workers: int = 4
 
     # Paths
@@ -137,7 +142,7 @@ class TrainingConfig:
 
 ## Training Data
 
-The model is trained on the Databricks Dolly 15k dataset, with configurable dataset size and train/validation split. The training script includes efficient data loading and preprocessing with multi-worker support.
+The model is trained on the Wikipedia dataset (`wikimedia/wikipedia`), with configurable dataset size and train/validation split. The training script includes efficient data loading and preprocessing with multi-worker support.
 
 ## Performance Optimizations
 
@@ -145,13 +150,13 @@ The model is trained on the Databricks Dolly 15k dataset, with configurable data
 
 - Gradient checkpointing
 - Dynamic batch size optimization
-- Efficient KV caching during inference
+- Efficient KV and KR caching during inference in the MLA module.
 
 ### Training Speed
 
 - Automatic Mixed Precision (AMP)
-- Optimized attention implementation
-- Efficient data loading with prefetching
+- Optimized attention implementation with MLA.
+- Efficient data loading with prefetching.
 
 ### Inference Quality
 
@@ -167,6 +172,10 @@ optimus-prime/
 ├── run.py             # Model inference interface
 ├── model.py           # Model architecture implementation
 ├── config.py          # Configuration and hyperparameters
+├── src/               # Source code for model components
+│   ├── attention.py   # MLA implementation
+│   ├── feedforward.py # SwiGLU implementation
+│   └── transformer.py # Transformer block implementations
 ├── checkpoints/       # Saved model checkpoints
 ├── runs/              # Training logs and metrics
 ├── pyproject.toml     # Poetry configuration and dependencies
